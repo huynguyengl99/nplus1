@@ -29,6 +29,7 @@ test = [
   "pytest>=9.0.3,<10"
 ]
 test-all = [
+  "celery>=5.3,<6",
   "django>=4.2,<6",
   "flask-sqlalchemy>=3.0,<4",
   "flask>=2.0,<4",
@@ -37,6 +38,10 @@ test-all = [
   "pytest-django>=4.8.0,<5",
   "sqlalchemy>=2.0,<3",
   "webtest>=3.0,<4",
+  {include-group = "test"}
+]
+test-celery = [
+  "celery>=5.3,<6",
   {include-group = "test"}
 ]
 test-django = [
@@ -89,6 +94,7 @@ requires-python = ">=3.11,<4.0"
 version = "0.0.1"
 
 [project.optional-dependencies]
+celery = ["celery>=5.3"]
 django = ["django>=4.2"]
 flask = ["flask-sqlalchemy>=3.0", "flask>=2.0"]
 peewee = ["peewee>=3.15"]

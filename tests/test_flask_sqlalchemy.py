@@ -335,3 +335,45 @@ class TestNPlusOne:
         app.config["NPLUSONE_WHITELIST"] = [{"model": "Hobby"}]
         client.get("/many_to_many/")
         assert logger.log.called
+
+    def test_enabled_false_skips_detection(
+        self,
+        app: flask.Flask,
+        wrapper: NPlusOne,
+        objects: Any,
+        client: webtest.TestApp,
+        logger: mock.Mock,
+    ) -> None:
+        app.config["NPLUSONE_ENABLED"] = False
+        client.get("/many_to_many/")
+        assert not logger.log.called
+
+    def test_error_response_skips_eager(
+        self,
+        app: flask.Flask,
+        wrapper: NPlusOne,
+        objects: Any,
+        sa_models: Any,
+        logger: mock.Mock,
+    ) -> None:
+        @app.route("/error_eager/")
+        def error_eager() -> tuple[str, int]:
+            sa_models.User.query.options(
+                sa.orm.joinedload(sa_models.User.hobbies)
+            ).all()
+            return "error", 400
+
+        test_client = webtest.TestApp(app)
+        test_client.get("/error_eager/", expect_errors=True)
+        assert not logger.log.called
+
+    def test_raise_on_detection(
+        self,
+        app: flask.Flask,
+        wrapper: NPlusOne,
+        objects: Any,
+        client: webtest.TestApp,
+    ) -> None:
+        app.config["NPLUSONE_RAISE"] = True
+        with pytest.raises(exceptions.NPlusOneError):
+            client.get("/many_to_many/")

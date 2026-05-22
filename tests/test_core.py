@@ -1,11 +1,13 @@
 """Tests for the core detection modules."""
 
+import inspect
 from typing import Any
 from unittest import mock
 
 import pytest
 from nplusone.core import exceptions, signals
 from nplusone.core.listeners import (
+    DebugListener,
     EagerListener,
     EagerLoadMessage,
     EagerTracker,
@@ -14,7 +16,10 @@ from nplusone.core.listeners import (
     Rule,
 )
 from nplusone.core.notifiers import ErrorNotifier, LogNotifier, init
-from nplusone.core.profiler import Profiler
+from nplusone.core.profiler import (
+    Profiler,
+    _ImperativeSession,
+)
 
 
 class TestRule:
@@ -545,3 +550,143 @@ class TestSignals:
 
         signal.send(signals.get_worker())
         assert len(called) == 1
+
+
+class TestImperativeSession:
+    """Tests for _ImperativeSession internals."""
+
+    def test_session_raise_on_detection(self) -> None:
+        """_ImperativeSession with NPLUSONE_RAISE raises NPlusOneError."""
+        session = _ImperativeSession(config={"NPLUSONE_RAISE": True})
+        model = type("Admin", (), {"__name__": "Admin"})
+        msg = LazyLoadMessage(model, "roles")
+        with pytest.raises(exceptions.NPlusOneError, match="Admin.roles"):
+            session.notify(msg)
+
+    def test_session_whitelist_suppresses_raise(self) -> None:
+        """_ImperativeSession whitelist prevents raise."""
+        session = _ImperativeSession(
+            config={
+                "NPLUSONE_RAISE": True,
+                "NPLUSONE_WHITELIST": [{"model": "User"}],
+            }
+        )
+        model = type("User", (), {"__name__": "User"})
+        msg = LazyLoadMessage(model, "addresses")
+        session.notify(msg)  # should NOT raise
+
+    def test_session_log_on_detection(self) -> None:
+        """_ImperativeSession with NPLUSONE_LOG logs the message."""
+        logger = mock.Mock()
+        session = _ImperativeSession(
+            config={"NPLUSONE_LOG": True, "NPLUSONE_LOGGER": logger}
+        )
+        model = type("Admin", (), {"__name__": "Admin"})
+        msg = LazyLoadMessage(model, "roles")
+        session.notify(msg)
+        logger.log.assert_called_once()
+        assert "Admin.roles" in logger.log.call_args[0][1]
+
+
+class TestDebugListener:
+    """Tests for the DebugListener signal logger."""
+
+    def test_debug_listener_logs_signals(self) -> None:
+        """DebugListener logs eager_load and touch signals."""
+
+        parent = mock.Mock()
+        listener = DebugListener(parent)
+        listener.setup()
+
+        model = type("User", (), {"__name__": "User"})
+
+        def eager_parser(
+            args: Any, kwargs: Any, context: Any
+        ) -> tuple[type, str, list[str], int]:
+            return model, "hobbies", ["User:1"], 1
+
+        with mock.patch("nplusone.core.listeners._debug_logger") as dbg:
+            signals.eager_load.send(
+                signals.get_worker(),
+                args=(),
+                kwargs={},
+                context={},
+                parser=eager_parser,
+            )
+            assert dbg.debug.called
+            logged = dbg.debug.call_args[0]
+            assert "EAGER_REGISTER" in logged[0]
+            assert "User" in str(logged)
+
+        listener.teardown()
+
+    def test_debug_listener_logs_lazy_load(self) -> None:
+        """DebugListener logs lazy_load signals."""
+        parent = mock.Mock()
+        listener = DebugListener(parent)
+        listener.setup()
+
+        model = type("User", (), {"__name__": "User"})
+
+        def lazy_parser(args: Any, kwargs: Any, context: Any) -> tuple[type, str, str]:
+            return model, "User:1", "addresses"
+
+        with mock.patch("nplusone.core.listeners._debug_logger") as dbg:
+            signals.lazy_load.send(
+                signals.get_worker(),
+                args=(),
+                kwargs={},
+                context={},
+                parser=lazy_parser,
+            )
+            assert dbg.debug.called
+
+        listener.teardown()
+
+    def test_debug_listener_logs_load(self) -> None:
+        """DebugListener logs load signals."""
+        parent = mock.Mock()
+        listener = DebugListener(parent)
+        listener.setup()
+
+        def load_parser(args: Any, kwargs: Any, context: Any, ret: Any) -> list[str]:
+            return ["User:1"]
+
+        with mock.patch("nplusone.core.listeners._debug_logger") as dbg:
+            signals.load.send(
+                signals.get_worker(),
+                args=(),
+                kwargs={},
+                context={},
+                ret=None,
+                parser=load_parser,
+            )
+            assert dbg.debug.called
+
+        listener.teardown()
+
+    def test_debug_listener_cleanup(self) -> None:
+        """DebugListener.cleanup() disconnects without errors."""
+        parent = mock.Mock()
+        listener = DebugListener(parent)
+        listener.setup()
+        listener.cleanup()
+
+
+class TestMessageWithCaller:
+    """Tests for stack trace in detection messages."""
+
+    def test_eager_load_message_includes_caller(self) -> None:
+        """EagerLoadMessage includes caller info when provided."""
+
+        frame = inspect.stack()[0]
+        model = type("User", (), {"__name__": "User"})
+        msg = EagerLoadMessage(model, "hobbies", caller=frame)
+        assert "Registered at:" in msg.message
+        assert "test_core.py" in msg.message
+
+    def test_message_without_caller(self) -> None:
+        """Message without caller omits the registration line."""
+        model = type("User", (), {"__name__": "User"})
+        msg = EagerLoadMessage(model, "hobbies")
+        assert "Registered at:" not in msg.message

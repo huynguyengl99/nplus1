@@ -507,6 +507,44 @@ class TestSkipEmptyPrefetch:
 
 
 @pytest.mark.django_db()
+@pytest.mark.xdist_group("settings_mutation")
+class TestDebugMode:
+    """Tests for NPLUSONE_DEBUG middleware mode."""
+
+    def test_debug_mode_logs_signals(
+        self, objects: Any, client: Any, logger: mock.Mock
+    ) -> None:
+        """Debug mode logs request start/end and signal activity."""
+        settings.NPLUSONE_DEBUG = True
+        try:
+            with mock.patch("nplusone.ext.django.middleware._debug_logger") as dbg:
+                client.get("/many_to_many/")
+                debug_calls = [c[0][0] for c in dbg.debug.call_args_list]
+                assert any("REQUEST START" in c for c in debug_calls)
+                assert any("REQUEST END" in c for c in debug_calls)
+        finally:
+            del settings.NPLUSONE_DEBUG
+
+
+@pytest.mark.django_db()
+@pytest.mark.xdist_group("settings_mutation")
+class TestBatchReporting:
+    """Tests for NPLUSONE_REPORT_MODE = 'batch' middleware mode."""
+
+    def test_batch_mode_collects_and_reports(
+        self, objects: Any, client: Any, logger: mock.Mock
+    ) -> None:
+        """Batch mode reports all detections at end of request."""
+        settings.NPLUSONE_REPORT_MODE = "batch"
+        try:
+            client.get("/select_one_to_one_unused/")
+            # In batch mode, logger gets a summary header + numbered items
+            assert logger.log.called
+        finally:
+            del settings.NPLUSONE_REPORT_MODE
+
+
+@pytest.mark.django_db()
 def test_values(objects: Any, lazy_listener: Any) -> None:
     """Values queries should not cause errors."""
     list(models.User.objects.values("id"))
