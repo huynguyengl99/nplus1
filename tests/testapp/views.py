@@ -32,7 +32,7 @@ def many_to_many(request):
 
 def many_to_many_get(request):
     """View using .get() - should not trigger N+1."""
-    user = models.User.objects.get(pk=1)
+    user = models.User.objects.first()
     return HttpResponse(user.hobbies.all())
 
 
@@ -66,7 +66,7 @@ def many_to_many_impossible(request):
 
 def many_to_many_impossible_one(request):
     """View using .get() then .all() - should not trigger N+1."""
-    user = models.User.objects.get(pk=1)
+    user = models.User.objects.first()
     list(models.User.objects.all())
     return HttpResponse(user.hobbies.all())
 

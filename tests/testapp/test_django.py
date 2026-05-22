@@ -51,7 +51,11 @@ class TestOneToOne:
         occupation.user
         assert len(calls) == 1
         call = calls[0]
-        assert call.objects == (models.Occupation, "Occupation:1", "user")
+        assert call.objects == (
+            models.Occupation,
+            f"Occupation:{occupation.pk}",
+            "user",
+        )
 
     def test_one_to_one_select(self, objects: Any, calls: Any) -> None:
         occupation = models.Occupation.objects.select_related("user").first()
@@ -68,7 +72,7 @@ class TestOneToOne:
         user.occupation
         assert len(calls) == 1
         call = calls[0]
-        assert call.objects == (models.User, "User:1", "occupation")
+        assert call.objects == (models.User, f"User:{user.pk}", "occupation")
 
 
 @pytest.mark.django_db()
@@ -80,7 +84,7 @@ class TestManyToOne:
         address.user
         assert len(calls) == 1
         call = calls[0]
-        assert call.objects == (models.Address, "Address:1", "user")
+        assert call.objects == (models.Address, f"Address:{address.pk}", "user")
 
     def test_many_to_one_select(self, objects: Any, calls: Any) -> None:
         address = list(models.Address.objects.select_related("user").all())
@@ -97,7 +101,7 @@ class TestManyToOne:
         user.addresses.first()
         assert len(calls) == 1
         call = calls[0]
-        assert call.objects == (models.User, "User:1", "addresses")
+        assert call.objects == (models.User, f"User:{user.pk}", "addresses")
 
     def test_many_to_one_reverse_no_related_name(
         self, objects: Any, calls: Any
@@ -106,7 +110,7 @@ class TestManyToOne:
         user.pet_set.first()
         assert len(calls) == 1
         call = calls[0]
-        assert call.objects == (models.User, "User:1", "pet_set")
+        assert call.objects == (models.User, f"User:{user.pk}", "pet_set")
 
 
 @pytest.mark.django_db()
@@ -115,10 +119,11 @@ class TestManyToMany:
 
     def test_many_to_many(self, objects: Any, calls: Any) -> None:
         users = models.User.objects.all()
-        list(users[0].hobbies.all())
+        user = users[0]
+        list(user.hobbies.all())
         assert len(calls) == 1
         call = calls[0]
-        assert call.objects == (models.User, "User:1", "hobbies")
+        assert call.objects == (models.User, f"User:{user.pk}", "hobbies")
 
     def test_many_to_many_prefetch(self, objects: Any, calls: Any) -> None:
         users = models.User.objects.all().prefetch_related("hobbies")
@@ -127,10 +132,11 @@ class TestManyToMany:
 
     def test_many_to_many_reverse(self, objects: Any, calls: Any) -> None:
         hobbies = models.Hobby.objects.all()
-        list(hobbies[0].users.all())
+        hobby = hobbies[0]
+        list(hobby.users.all())
         assert len(calls) == 1
         call = calls[0]
-        assert call.objects == (models.Hobby, "Hobby:1", "users")
+        assert call.objects == (models.Hobby, f"Hobby:{hobby.pk}", "users")
 
     def test_many_to_many_reverse_prefetch(self, objects: Any, calls: Any) -> None:
         hobbies = models.Hobby.objects.all().prefetch_related("users")
@@ -185,7 +191,7 @@ class TestIntegration:
         pet.allergy_set.first()
         assert len(calls) == 1
         call = calls[0]
-        assert call.objects == (models.Pet, "Pet:1", "allergy_set")
+        assert call.objects == (models.Pet, f"Pet:{pet.pk}", "allergy_set")
 
     def test_prefetch_one_to_one(
         self, objects: Any, client: Any, logger: mock.Mock
