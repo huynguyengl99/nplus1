@@ -94,7 +94,6 @@ peewee = ["peewee>=3.15"]
 sqlalchemy = ["sqlalchemy>=2.0"]
 
 [project.urls]
-Documentation = "https://nplus1.readthedocs.io/"
 Homepage = "https://github.com/huynguyengl99/nplus1"
 Repository = "https://github.com/huynguyengl99/nplus1"
 
