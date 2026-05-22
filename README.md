@@ -4,24 +4,24 @@ Detect the N+1 queries problem in Python ORMs — SQLAlchemy, Peewee, and Django
 
 A modern rewrite of the [original nplusone](https://github.com/jmcarp/nplusone) library, targeting Python 3.11+ with full type annotations, SQLAlchemy 2.0 support, and fixes for false positives found in production Django+DRF codebases.
 
-[![PyPI](https://img.shields.io/pypi/v/nplusone)](https://pypi.org/project/nplusone/)
-[![Python](https://img.shields.io/pypi/pyversions/nplusone)](https://pypi.org/project/nplusone/)
+[![PyPI](https://img.shields.io/pypi/v/nplus1)](https://pypi.org/project/nplus1/)
+[![Python](https://img.shields.io/pypi/pyversions/nplus1)](https://pypi.org/project/nplus1/)
 [![Tests](https://github.com/huynguyengl99/nplus1/actions/workflows/test.yml/badge.svg)](https://github.com/huynguyengl99/nplus1/actions)
 [![Coverage](https://codecov.io/gh/huynguyengl99/nplus1/branch/main/graph/badge.svg)](https://codecov.io/gh/huynguyengl99/nplus1)
 
 ## Installation
 
 ```bash
-pip install nplusone
+pip install nplus1
 ```
 
 With optional ORM/framework dependencies:
 
 ```bash
-pip install nplusone[django]           # Django 4.2+
-pip install nplusone[sqlalchemy]       # SQLAlchemy 2.0+
-pip install nplusone[flask]            # Flask + Flask-SQLAlchemy
-pip install nplusone[peewee]           # Peewee 3.15+
+pip install nplus1[django]           # Django 4.2+
+pip install nplus1[sqlalchemy]       # SQLAlchemy 2.0+
+pip install nplus1[flask]            # Flask + Flask-SQLAlchemy
+pip install nplus1[peewee]           # Peewee 3.15+
 ```
 
 ## Quick Start
