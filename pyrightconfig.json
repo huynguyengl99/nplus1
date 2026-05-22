@@ -1,7 +1,16 @@
 {
     "include": ["nplusone", "tests"],
+    "exclude": [
+        "nplusone/ext/sqlalchemy.py",
+        "nplusone/ext/peewee.py",
+        "nplusone/ext/django/patch.py",
+        "nplusone/ext/flask_sqlalchemy.py",
+        "nplusone/ext/celery.py",
+        "tests/**"
+    ],
     "typeCheckingMode": "strict",
     "reportMissingTypeArgument": "warning",
     "reportMissingTypeStubs": "warning",
+    "reportMissingImports": "warning",
     "pythonVersion": "3.11"
 }

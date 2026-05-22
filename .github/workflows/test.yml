@@ -3,7 +3,7 @@ name: Test
 on:
   push:
     branches:
-      - main
+      - '**'
   pull_request:
     types:
       - opened
@@ -17,18 +17,61 @@ jobs:
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v5
         with:
-            enable-cache: true
-            python-version: 3.11
+          enable-cache: true
+          python-version: "3.11"
       - name: Install tox
         run: uv tool install tox --with tox-uv --with tox-gh
       - name: Run lint
         run: tox -e lint
 
-  test:
+  test-django:
+    name: test py${{ matrix.py }}-django${{ matrix.django }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        py: ["3.11", "3.12", "3.13"]
+        django: ["42", "51", "52"]
+      fail-fast: false
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_PASSWORD: nplusone_test_pass
+          POSTGRES_DB: nplusone_test_db
+          POSTGRES_USER: nplusone_test_user
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      DJANGO_DB_ENGINE: django.db.backends.postgresql
+      DJANGO_DB_NAME: nplusone_test_db
+      DJANGO_DB_USER: nplusone_test_user
+      DJANGO_DB_PASSWORD: nplusone_test_pass
+      DJANGO_DB_HOST: localhost
+      DJANGO_DB_PORT: 5432
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.py }}
+      - name: Install tox
+        run: uv tool install tox --with tox-uv --with tox-gh
+      - name: Run tests
+        run: tox -e py$(echo "${{ matrix.py }}" | tr -d '.')-django${{ matrix.django }}
+
+  test-other:
+    name: test py${{ matrix.py }}-${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        py: ["3.11", "3.12", "3.13"]
+        package: ["sqlalchemy", "peewee", "flask", "core"]
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
@@ -36,14 +79,35 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.py }}
       - name: Install tox
         run: uv tool install tox --with tox-uv --with tox-gh
       - name: Run tests
-        run: tox
+        run: tox -e py$(echo "${{ matrix.py }}" | tr -d '.')-${{ matrix.package }}
 
   coverage:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_PASSWORD: nplusone_test_pass
+          POSTGRES_DB: nplusone_test_db
+          POSTGRES_USER: nplusone_test_user
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5440:5432
+    env:
+      DJANGO_DB_ENGINE: django.db.backends.postgresql
+      DJANGO_DB_NAME: nplusone_test_db
+      DJANGO_DB_USER: nplusone_test_user
+      DJANGO_DB_PASSWORD: nplusone_test_pass
+      DJANGO_DB_HOST: localhost
+      DJANGO_DB_PORT: 5440
     steps:
       - uses: actions/checkout@v4
       - name: Install the latest version of uv
@@ -59,3 +123,4 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          slug: huynguyengl99/nplus1

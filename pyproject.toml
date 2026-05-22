@@ -10,12 +10,16 @@ docs = [
   "sphinx_rtd_theme"
 ]
 lint = [
+  "django-stubs>=6.0",
   "interrogate>=1.7.0",
   "mypy>=2.1.0",
   "pre-commit>=4.6.0,<5",
   "pyright[nodejs]>=1.1.409,<2",
   "ruff>=0.15.14,<0.16",
-  "toml-sort>=0.24.4,<0.25"
+  "sqlalchemy-stubs>=0.4",
+  "toml-sort>=0.24.4,<0.25",
+  "types-peewee>=4.0",
+  {include-group = "test-all"}
 ]
 test = [
   "coverage[toml]>=7.14.0,<8",
@@ -23,6 +27,36 @@ test = [
   "pytest-mock>=3.15.1,<4",
   "pytest-xdist>=3.8.0,<4",
   "pytest>=9.0.3,<10"
+]
+test-django = [
+  "pytest-django>=4.8.0,<5",
+  {include-group = "test"}
+]
+test-sqlalchemy = [
+  "sqlalchemy>=2.0,<3",
+  {include-group = "test"}
+]
+test-peewee = [
+  "peewee>=3.15,<4",
+  {include-group = "test"}
+]
+test-flask = [
+  "flask>=2.0,<4",
+  "flask-sqlalchemy>=3.0,<4",
+  "sqlalchemy>=2.0,<3",
+  "webtest>=3.0,<4",
+  {include-group = "test"}
+]
+test-all = [
+  "django>=4.2,<6",
+  "flask-sqlalchemy>=3.0,<4",
+  "flask>=2.0,<4",
+  "peewee>=3.15,<4",
+  "psycopg2-binary>=2.9,<3",
+  "pytest-django>=4.8.0,<5",
+  "sqlalchemy>=2.0,<3",
+  "webtest>=3.0,<4",
+  {include-group = "test"}
 ]
 
 [project]
@@ -45,13 +79,19 @@ classifiers = [
   "Topic :: Software Development :: Libraries",
   "Topic :: Software Development"
 ]
-dependencies = []
+dependencies = ["blinker>=1.9"]
 description = "nplusone is a library for detecting the n+1 queries problem in Python ORMs, including SQLAlchemy, Peewee, and the Django ORM"
 license = {file = "LICENSE"}
 name = "nplusone"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
 version = "0.0.1"
+
+[project.optional-dependencies]
+django = ["django>=4.2"]
+flask = ["flask>=2.0", "flask-sqlalchemy>=3.0"]
+peewee = ["peewee>=3.15"]
+sqlalchemy = ["sqlalchemy>=2.0"]
 
 [project.urls]
 Documentation = "https://nplus1.readthedocs.io/"
