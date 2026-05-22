@@ -1035,8 +1035,8 @@ wheels = [
 ]
 
 [[package]]
-name = "nplusone"
-version = "0.0.1"
+name = "nplus1"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "blinker" },
