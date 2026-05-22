@@ -10,7 +10,6 @@ ALLOWED_HOSTS: list[str] = ["*"]
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.auth",
-    "nplusone.ext.django",
     "tests.testapp",
 ]
 
