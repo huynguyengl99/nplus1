@@ -1,11 +1,17 @@
 """Django integration for N+1 detection.
 
-Importing this module applies monkey patches to Django's ORM.
+Patches are applied only when ``NPLUSONE_ENABLED`` is True (or unset).
+If ``NPLUSONE_ENABLED = False`` in Django settings, importing this module
+is a no-op — no monkey patches, no signal hooks, zero overhead.
 """
 
-from nplusone.ext.django import (
-    patch as _patch,  # noqa: F401  # pyright: ignore[reportUnusedImport]
-)
+from django.conf import settings
+
 from nplusone.ext.django.middleware import NPlusOneMiddleware
+
+if getattr(settings, "NPLUSONE_ENABLED", True):
+    from nplusone.ext.django.patch import apply_patches
+
+    apply_patches()
 
 __all__ = ["NPlusOneMiddleware"]

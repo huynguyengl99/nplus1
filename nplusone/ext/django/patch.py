@@ -1,7 +1,8 @@
 """Monkey patches for Django's ORM to emit detection signals.
 
-Applied at import time when nplusone.ext.django is imported.
-Targets Django 4.2+.
+Patches are applied lazily via ``apply_patches()`` — only when
+``NPLUSONE_ENABLED`` is True (or unset). If ``NPLUSONE_ENABLED = False``
+in Django settings, no patching occurs and there is zero runtime overhead.
 """
 
 import copy
@@ -22,6 +23,8 @@ from django.db.models.fields.related_descriptors import (
 
 from nplusone.core import signals
 
+_patched = False
+
 
 def get_worker() -> str:
     """Get thread ID as the worker identifier for Django."""
@@ -31,9 +34,6 @@ def get_worker() -> str:
 def setup_state() -> None:
     """Configure signals to use thread-scoped workers."""
     signals.get_worker = get_worker
-
-
-setup_state()
 
 
 def to_key(instance: Any) -> str:
@@ -182,13 +182,6 @@ def parse_foreign_related_queryset(
     return model, to_key(descriptor.instance), name
 
 
-# Suppress lazy_load signals during prefetch_related execution
-query.prefetch_one_level = signals.designalify(
-    signals.lazy_load,
-    query.prefetch_one_level,
-)
-
-
 def parse_get(
     args: tuple[Any, ...] | None,
     kwargs: dict[str, Any] | None,
@@ -197,63 +190,6 @@ def parse_get(
 ) -> list[str]:
     """Extract instance key from QuerySet.get() result."""
     return [to_key(ret)] if isinstance(ret, Model) else []
-
-
-# Ignore records loaded during `get`
-query.QuerySet.get = signals.signalify(  # type: ignore[method-assign]
-    signals.ignore_load,
-    query.QuerySet.get,
-    parser=parse_get,
-)
-
-
-# Signalify descriptor queryset methods for lazy load detection
-ReverseOneToOneDescriptor.get_queryset = signalify_queryset(  # type: ignore[method-assign]
-    ReverseOneToOneDescriptor.get_queryset,
-    parser=parse_reverse_one_to_one_queryset,
-)
-ForwardManyToOneDescriptor.get_queryset = signalify_queryset(  # type: ignore[method-assign]
-    ForwardManyToOneDescriptor.get_queryset,
-    parser=parse_forward_many_to_one_queryset,
-)
-
-# Cache signatures for manager creation functions
-_m2m_sig = inspect.signature(create_forward_many_to_many_manager)
-_rev_m2o_sig = inspect.signature(create_reverse_many_to_one_manager)
-
-
-def _create_forward_many_to_many_manager(*args: Any, **kwargs: Any) -> Any:
-    """Patched manager factory that tracks ManyToMany lazy loads."""
-    bound = _m2m_sig.bind(*args, **kwargs)
-    bound.apply_defaults()
-    context = dict(bound.arguments)
-    manager = create_forward_many_to_many_manager(*args, **kwargs)
-    manager.get_queryset = signalify_queryset(  # type: ignore[method-assign]
-        manager.get_queryset,
-        parser=parse_many_related_queryset,
-        **context,
-    )
-    return manager
-
-
-_patch_module(create_forward_many_to_many_manager, _create_forward_many_to_many_manager)
-
-
-def _create_reverse_many_to_one_manager(*args: Any, **kwargs: Any) -> Any:
-    """Patched manager factory that tracks reverse FK lazy loads."""
-    bound = _rev_m2o_sig.bind(*args, **kwargs)
-    bound.apply_defaults()
-    context = dict(bound.arguments)
-    manager = create_reverse_many_to_one_manager(*args, **kwargs)
-    manager.get_queryset = signalify_queryset(  # type: ignore[method-assign]
-        manager.get_queryset,
-        parser=parse_foreign_related_queryset,
-        **context,
-    )
-    return manager
-
-
-_patch_module(create_reverse_many_to_one_manager, _create_reverse_many_to_one_manager)
 
 
 def parse_forward_many_to_one_get(
@@ -269,14 +205,6 @@ def parse_forward_many_to_one_get(
     return field, model, [to_key(instance)]
 
 
-# Emit `touch` on FK descriptor access
-ForwardManyToOneDescriptor.__get__ = signals.signalify(  # type: ignore[method-assign]
-    signals.touch,
-    ForwardManyToOneDescriptor.__get__,
-    parser=parse_forward_many_to_one_get,
-)
-
-
 def parse_reverse_one_to_one_get(
     args: tuple[Any, ...] | None,
     kwargs: dict[str, Any] | None,
@@ -288,14 +216,6 @@ def parse_reverse_one_to_one_get(
         return None
     model, field = parse_field(descriptor.related.field)
     return model, field, [to_key(instance)]
-
-
-# Emit `touch` on reverse OneToOne descriptor access
-ReverseOneToOneDescriptor.__get__ = signals.signalify(  # type: ignore[method-assign]
-    signals.touch,
-    ReverseOneToOneDescriptor.__get__,
-    parser=parse_reverse_one_to_one_get,
-)
 
 
 def parse_fetch_all(
@@ -342,52 +262,6 @@ def is_single(low: int, high: int | None) -> bool:
     return high is not None and high - low == 1
 
 
-# On queryset fetch, emit `touch` if results have been prefetched; emit `load`
-# if the query requests more than one record, else `ignore_load`.
-_original_fetch_all = query.QuerySet._fetch_all
-
-
-def _fetch_all(self: Any) -> None:
-    """Patched _fetch_all that emits load signals."""
-    if self._prefetch_done:
-        signals.touch.send(
-            get_worker(),
-            args=(self,),
-            parser=parse_fetch_all,
-        )
-    _original_fetch_all(self)
-    signal = (
-        signals.ignore_load
-        if is_single(self.query.low_mark, self.query.high_mark)
-        else signals.load
-    )
-    signal.send(
-        get_worker(),
-        args=(self,),
-        ret=self._result_cache,
-        parser=parse_load,
-    )
-
-
-query.QuerySet._fetch_all = _fetch_all  # type: ignore[method-assign]
-
-
-# Store init args on RelatedPopulator for later use in parse_eager_select
-_original_related_populator_init = query.RelatedPopulator.__init__
-
-
-def _related_populator_init(self: Any, *args: Any, **kwargs: Any) -> None:
-    """Patched __init__ that stores args for eager load detection."""
-    _original_related_populator_init(self, *args, **kwargs)
-    self.__nplusone__ = {
-        "args": args,
-        "kwargs": kwargs,
-    }
-
-
-query.RelatedPopulator.__init__ = _related_populator_init  # type: ignore[method-assign]
-
-
 def parse_eager_select(
     args: tuple[Any, ...] | None,
     kwargs: dict[str, Any] | None,
@@ -410,31 +284,31 @@ def parse_eager_select(
     return model, name, [to_key(instance)], id(select)
 
 
-# Emit `eager_load` on populating from `select_related`.
-# Skip nullable FK fields entirely — select_related on a nullable FK is always
-# a valid optimization (the LEFT JOIN prevents N+1 on rows where the FK IS
-# populated, and the overhead for NULL rows is negligible).
-_original_populate = query.RelatedPopulator.populate
+def parse_populate_load(
+    args: tuple[Any, ...] | None,
+    kwargs: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+    ret: Any,
+) -> list[str]:
+    """Extract instance key from RelatedPopulator.populate for load signal.
 
-
-def _related_populator_populate(self: Any, *args: Any, **kwargs: Any) -> Any:
-    """Patched populate that emits eager_load, skipping nullable FKs."""
-    ret = _original_populate(self, *args, **kwargs)
-    # Skip nullable FK fields — select_related is always valid for them
-    field = self.__nplusone__["args"][0]["field"]
-    if getattr(field, "null", False):
-        return ret
-    signals.eager_load.send(
-        signals.get_worker(),
-        args=(self,) + tuple(args),
-        kwargs=kwargs,
-        context={},
-        parser=parse_eager_select,
-    )
-    return ret
-
-
-query.RelatedPopulator.populate = _related_populator_populate  # type: ignore[method-assign]
+    This adds select_related child instances to the LazyListener's loaded set,
+    enabling N+1 detection on their FK fields. Without this, accessing
+    ``pet.user.occupation`` (where user was loaded via select_related but
+    occupation was not) would go undetected.
+    """
+    populator = args[0]  # type: ignore[index]
+    from_obj = args[2]  # type: ignore[index]
+    meta = populator.__nplusone__
+    klass_info = meta["args"][0]
+    field = klass_info["field"]
+    try:
+        related_obj = field.get_cached_value(from_obj)
+    except KeyError:
+        return []
+    if related_obj is None:
+        return []
+    return [to_key(related_obj)]
 
 
 def parse_eager_join(
@@ -450,30 +324,6 @@ def parse_eager_join(
     return model, field, keys, id(instances)
 
 
-# Emit `eager_load` on populating from `prefetch_related`.
-# Uses a custom wrapper instead of signalify to support NPLUSONE_SKIP_EMPTY_PREFETCH:
-# when enabled, skip the signal if the prefetch returned zero related objects.
-_prefetch_one_level_inner = query.prefetch_one_level  # already designalify'd
-
-
-def _prefetch_one_level_eager(*args: Any, **kwargs: Any) -> Any:
-    """Wrapper that emits eager_load, optionally skipping empty prefetches."""
-    ret = _prefetch_one_level_inner(*args, **kwargs)
-    # ret is (all_related_objects, additional_lookups)
-    all_related = ret[0] if isinstance(ret, tuple) else []
-    if not all_related and _should_skip_empty_prefetch():
-        return ret
-    signals.eager_load.send(
-        signals.get_worker(),
-        args=args,
-        kwargs=kwargs,
-        ret=ret,
-        context={},
-        parser=parse_eager_join,
-    )
-    return ret
-
-
 def _should_skip_empty_prefetch() -> bool:
     """Check if NPLUSONE_SKIP_EMPTY_PREFETCH is enabled in Django settings."""
     try:
@@ -482,22 +332,200 @@ def _should_skip_empty_prefetch() -> bool:
         return False
 
 
-query.prefetch_one_level = _prefetch_one_level_eager
+def apply_patches() -> None:
+    """Apply monkey patches to Django's ORM.
 
+    Called once at import time by ``nplusone.ext.django.__init__``.
+    Guarded by ``NPLUSONE_ENABLED`` setting — if False, no patches
+    are applied and there is zero runtime overhead.
 
-# Emit `touch` on indexing into prefetched QuerySet instances
-_original_getitem_queryset = query.QuerySet.__getitem__
+    Safe to call multiple times (idempotent).
+    """
+    global _patched  # noqa: PLW0603
+    if _patched:
+        return
+    _patched = True
 
+    setup_state()
 
-def _getitem_queryset(self: Any, index: Any) -> Any:
-    """Patched __getitem__ that emits touch for prefetched querysets."""
-    if self._prefetch_done:
-        signals.touch.send(
+    # Cache signatures for manager creation functions
+    m2m_sig = inspect.signature(create_forward_many_to_many_manager)
+    rev_m2o_sig = inspect.signature(create_reverse_many_to_one_manager)
+
+    # --- Lazy load detection patches ---
+
+    # Suppress lazy_load signals during prefetch_related execution
+    query.prefetch_one_level = signals.designalify(
+        signals.lazy_load,
+        query.prefetch_one_level,
+    )
+
+    # Ignore records loaded during `get`
+    query.QuerySet.get = signals.signalify(  # type: ignore[method-assign]
+        signals.ignore_load,
+        query.QuerySet.get,
+        parser=parse_get,
+    )
+
+    # Signalify descriptor queryset methods for lazy load detection
+    ReverseOneToOneDescriptor.get_queryset = signalify_queryset(  # type: ignore[method-assign]
+        ReverseOneToOneDescriptor.get_queryset,
+        parser=parse_reverse_one_to_one_queryset,
+    )
+    ForwardManyToOneDescriptor.get_queryset = signalify_queryset(  # type: ignore[method-assign]
+        ForwardManyToOneDescriptor.get_queryset,
+        parser=parse_forward_many_to_one_queryset,
+    )
+
+    # Patch manager factories for M2M and reverse FK
+    def _create_forward_many_to_many_manager(*args: Any, **kwargs: Any) -> Any:
+        bound = m2m_sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        ctx = dict(bound.arguments)
+        manager = create_forward_many_to_many_manager(*args, **kwargs)
+        manager.get_queryset = signalify_queryset(  # type: ignore[method-assign]
+            manager.get_queryset,
+            parser=parse_many_related_queryset,
+            **ctx,
+        )
+        return manager
+
+    _patch_module(
+        create_forward_many_to_many_manager,
+        _create_forward_many_to_many_manager,
+    )
+
+    def _create_reverse_many_to_one_manager(*args: Any, **kwargs: Any) -> Any:
+        bound = rev_m2o_sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        ctx = dict(bound.arguments)
+        manager = create_reverse_many_to_one_manager(*args, **kwargs)
+        manager.get_queryset = signalify_queryset(  # type: ignore[method-assign]
+            manager.get_queryset,
+            parser=parse_foreign_related_queryset,
+            **ctx,
+        )
+        return manager
+
+    _patch_module(
+        create_reverse_many_to_one_manager,
+        _create_reverse_many_to_one_manager,
+    )
+
+    # --- Touch signal patches (for eager load tracking) ---
+
+    # Emit `touch` on FK descriptor access
+    ForwardManyToOneDescriptor.__get__ = signals.signalify(  # type: ignore[method-assign]
+        signals.touch,
+        ForwardManyToOneDescriptor.__get__,
+        parser=parse_forward_many_to_one_get,
+    )
+
+    # Emit `touch` on reverse OneToOne descriptor access
+    ReverseOneToOneDescriptor.__get__ = signals.signalify(  # type: ignore[method-assign]
+        signals.touch,
+        ReverseOneToOneDescriptor.__get__,
+        parser=parse_reverse_one_to_one_get,
+    )
+
+    # --- Load/ignore_load signal patches ---
+
+    original_fetch_all = query.QuerySet._fetch_all
+
+    def _fetch_all(self: Any) -> None:
+        if self._prefetch_done:
+            signals.touch.send(
+                get_worker(),
+                args=(self,),
+                parser=parse_fetch_all,
+            )
+        original_fetch_all(self)
+        signal = (
+            signals.ignore_load
+            if is_single(self.query.low_mark, self.query.high_mark)
+            else signals.load
+        )
+        signal.send(
             get_worker(),
             args=(self,),
-            parser=parse_fetch_all,
+            ret=self._result_cache,
+            parser=parse_load,
         )
-    return _original_getitem_queryset(self, index)
 
+    query.QuerySet._fetch_all = _fetch_all  # type: ignore[method-assign]
 
-query.QuerySet.__getitem__ = _getitem_queryset  # type: ignore[method-assign]
+    # --- Eager load signal patches (select_related) ---
+
+    original_related_populator_init = query.RelatedPopulator.__init__
+
+    def _related_populator_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_related_populator_init(self, *args, **kwargs)
+        self.__nplusone__ = {"args": args, "kwargs": kwargs}
+
+    query.RelatedPopulator.__init__ = _related_populator_init  # type: ignore[method-assign]
+
+    original_populate = query.RelatedPopulator.populate
+
+    def _related_populator_populate(self: Any, *args: Any, **kwargs: Any) -> Any:
+        ret = original_populate(self, *args, **kwargs)
+        field = self.__nplusone__["args"][0]["field"]
+        # Emit `load` for the populated child instance so it enters
+        # the LazyListener's loaded set (enables N+1 detection on
+        # FK fields of select_related instances).
+        signals.load.send(
+            signals.get_worker(),
+            args=(self,) + tuple(args),
+            kwargs=kwargs,
+            context={},
+            ret=ret,
+            parser=parse_populate_load,
+        )
+        # Emit `eager_load` for unused eager load tracking.
+        # Skip nullable FK fields — select_related is always valid for them.
+        if not getattr(field, "null", False):
+            signals.eager_load.send(
+                signals.get_worker(),
+                args=(self,) + tuple(args),
+                kwargs=kwargs,
+                context={},
+                parser=parse_eager_select,
+            )
+        return ret
+
+    query.RelatedPopulator.populate = _related_populator_populate  # type: ignore[method-assign]
+
+    # --- Eager load signal patches (prefetch_related) ---
+
+    prefetch_one_level_inner = query.prefetch_one_level  # already designalify'd
+
+    def _prefetch_one_level_eager(*args: Any, **kwargs: Any) -> Any:
+        ret = prefetch_one_level_inner(*args, **kwargs)
+        all_related = ret[0] if isinstance(ret, tuple) else []
+        if not all_related and _should_skip_empty_prefetch():
+            return ret
+        signals.eager_load.send(
+            signals.get_worker(),
+            args=args,
+            kwargs=kwargs,
+            ret=ret,
+            context={},
+            parser=parse_eager_join,
+        )
+        return ret
+
+    query.prefetch_one_level = _prefetch_one_level_eager
+
+    # --- Touch on queryset indexing ---
+
+    original_getitem_queryset = query.QuerySet.__getitem__
+
+    def _getitem_queryset(self: Any, index: Any) -> Any:
+        if self._prefetch_done:
+            signals.touch.send(
+                get_worker(),
+                args=(self,),
+                parser=parse_fetch_all,
+            )
+        return original_getitem_queryset(self, index)
+
+    query.QuerySet.__getitem__ = _getitem_queryset  # type: ignore[method-assign]

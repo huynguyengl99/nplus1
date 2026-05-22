@@ -1,7 +1,7 @@
 """SQLAlchemy integration for N+1 detection.
 
-Monkey-patches SQLAlchemy internals to emit signals on lazy loads,
-eager loads, and attribute access.
+Patches are applied lazily via ``apply_patches()`` — only when explicitly
+called. The Flask-SQLAlchemy extension calls this automatically.
 """
 
 import inspect
@@ -10,6 +10,8 @@ from typing import Any, Self
 from sqlalchemy.orm import attributes, loading, query, strategies
 
 from nplusone.core import signals
+
+_patched = False
 
 
 def to_key(instance: Any) -> str:
@@ -59,14 +61,6 @@ def parse_attribute_get(
     return attr.class_, attr.key, [to_key(instance)]
 
 
-# Emit `lazy_load` on lazy loader execution
-strategies.LazyLoader._load_for_state = signals.signalify(  # type: ignore[attr-defined]
-    signals.lazy_load,
-    strategies.LazyLoader._load_for_state,  # type: ignore[attr-defined]
-    parser=parse_lazy_load,
-)
-
-
 def parse_populate(
     args: tuple[Any, ...] | None,
     kwargs: dict[str, Any] | None,
@@ -82,43 +76,6 @@ def parse_populate(
         [to_key(instance)],
         id(query_context),
     )
-
-
-# Emit `eager_load` on populating from `joinedload` or `subqueryload`
-_original_populate_full = loading._populate_full  # type: ignore[attr-defined]
-
-
-def _populate_full(*args: Any, **kwargs: Any) -> Any:
-    """Wrapper that emits eager_load signals after populating."""
-    ret = _original_populate_full(*args, **kwargs)
-    # Extract populators from function arguments
-    # Signature: _populate_full(context, row, state, ..., populators, ...)
-    # Use positional inspection to get the populators dict
-    sig = inspect.signature(_original_populate_full)
-    bound = sig.bind(*args, **kwargs)
-    bound.apply_defaults()
-    context_dict = bound.arguments
-    for key, _ in context_dict.get("populators", {}).get("eager", []):
-        if context_dict.get("dict_", {}).get(key):
-            signals.eager_load.send(
-                signals.get_worker(),
-                args=args,
-                kwargs=kwargs,
-                context={"key": key},
-                parser=parse_populate,
-            )
-    return ret
-
-
-loading._populate_full = _populate_full  # type: ignore[attr-defined]
-
-
-# Emit `touch` on attribute access
-attributes.InstrumentedAttribute.__get__ = signals.signalify(  # type: ignore[method-assign]
-    signals.touch,
-    attributes.InstrumentedAttribute.__get__,
-    parser=parse_attribute_get,
-)
 
 
 def _clause_value(clause: Any) -> int | None:
@@ -137,31 +94,14 @@ def is_single(offset: Any, limit: Any) -> bool:
     return limit_val is not None and limit_val - offset_val == 1
 
 
-# Emit `load` or `ignore_load` on query execution.
-# In SQLAlchemy 2.0, Query.all() calls _iter() instead of __iter__.
-_original_query_iter = query.Query._iter  # type: ignore[attr-defined]
-
-
-def _query_iter(self: Any) -> Any:
-    """Wrapper that emits load/ignore_load signals on query execution."""
-    result = _original_query_iter(self)
-
-    # Collect rows to determine what was loaded
-    rows = result.all()
-    signal = (
-        signals.ignore_load
-        if is_single(self._offset_clause, self._limit_clause)
-        else signals.load
-    )
-    signal.send(
-        signals.get_worker(),
-        args=(self,),
-        ret=rows,
-        parser=parse_load,
-    )
-
-    # Return a fake result that yields the already-consumed rows
-    return _RowListResult(list(rows))
+def parse_get(
+    args: tuple[Any, ...] | None,
+    kwargs: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+    ret: Any,
+) -> list[str]:
+    """Extract instance key from a single-object query result."""
+    return [to_key(ret)] if hasattr(ret, "__table__") else []
 
 
 class _RowListResult:
@@ -205,22 +145,80 @@ class _RowListResult:
         return self
 
 
-query.Query._iter = _query_iter  # type: ignore[attr-defined]
+def apply_patches() -> None:
+    """Apply monkey patches to SQLAlchemy's ORM.
+
+    Safe to call multiple times (idempotent).
+    """
+    global _patched  # noqa: PLW0603
+    if _patched:
+        return
+    _patched = True
+
+    # Emit `lazy_load` on lazy loader execution
+    strategies.LazyLoader._load_for_state = signals.signalify(  # type: ignore[attr-defined]
+        signals.lazy_load,
+        strategies.LazyLoader._load_for_state,  # type: ignore[attr-defined]
+        parser=parse_lazy_load,
+    )
+
+    # Emit `eager_load` on populating from `joinedload` or `subqueryload`
+    original_populate_full = loading._populate_full  # type: ignore[attr-defined]
+
+    def _populate_full(*args: Any, **kwargs: Any) -> Any:
+        ret = original_populate_full(*args, **kwargs)
+        sig = inspect.signature(original_populate_full)
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        context_dict = bound.arguments
+        for key, _ in context_dict.get("populators", {}).get("eager", []):
+            if context_dict.get("dict_", {}).get(key):
+                signals.eager_load.send(
+                    signals.get_worker(),
+                    args=args,
+                    kwargs=kwargs,
+                    context={"key": key},
+                    parser=parse_populate,
+                )
+        return ret
+
+    loading._populate_full = _populate_full  # type: ignore[attr-defined]
+
+    # Emit `touch` on attribute access
+    attributes.InstrumentedAttribute.__get__ = signals.signalify(  # type: ignore[method-assign]
+        signals.touch,
+        attributes.InstrumentedAttribute.__get__,
+        parser=parse_attribute_get,
+    )
+
+    # Emit `load` or `ignore_load` on query execution
+    original_query_iter = query.Query._iter  # type: ignore[attr-defined]
+
+    def _query_iter(self: Any) -> Any:
+        result = original_query_iter(self)
+        rows = result.all()
+        signal = (
+            signals.ignore_load
+            if is_single(self._offset_clause, self._limit_clause)
+            else signals.load
+        )
+        signal.send(
+            signals.get_worker(),
+            args=(self,),
+            ret=rows,
+            parser=parse_load,
+        )
+        return _RowListResult(list(rows))
+
+    query.Query._iter = _query_iter  # type: ignore[attr-defined]
+
+    # Ignore records loaded during `one` and `one_or_none`
+    for method_name in ["one_or_none", "one"]:
+        if hasattr(query.Query, method_name):
+            original = getattr(query.Query, method_name)
+            decorated = signals.signalify(signals.ignore_load, original, parse_get)
+            setattr(query.Query, method_name, decorated)
 
 
-def parse_get(
-    args: tuple[Any, ...] | None,
-    kwargs: dict[str, Any] | None,
-    context: dict[str, Any] | None,
-    ret: Any,
-) -> list[str]:
-    """Extract instance key from a single-object query result."""
-    return [to_key(ret)] if hasattr(ret, "__table__") else []
-
-
-# Ignore records loaded during `one` and `one_or_none`
-for _method_name in ["one_or_none", "one"]:
-    if hasattr(query.Query, _method_name):
-        _original = getattr(query.Query, _method_name)
-        _decorated = signals.signalify(signals.ignore_load, _original, parse_get)
-        setattr(query.Query, _method_name, _decorated)
+# Auto-apply on import (backward compat with `import nplusone.ext.sqlalchemy`)
+apply_patches()

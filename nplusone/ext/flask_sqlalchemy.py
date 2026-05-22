@@ -9,8 +9,8 @@ from typing import Any
 
 from flask import g, request
 
-import nplusone.ext.sqlalchemy  # noqa: F401 — triggers SQLAlchemy patches
 from nplusone.core import listeners, notifiers, signals
+from nplusone.ext.sqlalchemy import apply_patches as _apply_sa_patches
 
 _debug_logger = logging.getLogger("nplusone.debug")
 
@@ -84,6 +84,7 @@ class NPlusOne:
 
     def init_app(self, app: Any) -> None:
         """Initialize the extension with a Flask application."""
+        _apply_sa_patches()
 
         @app.before_request
         def connect() -> None:

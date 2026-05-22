@@ -1,7 +1,7 @@
 """Peewee integration for N+1 detection.
 
-Monkey-patches Peewee internals to emit signals on lazy loads
-and query execution.
+Patches are applied lazily via ``apply_patches()`` — only when explicitly
+called. Auto-applied on import for backward compatibility.
 """
 
 from typing import Any
@@ -17,6 +17,8 @@ from peewee import (
 )
 
 from nplusone.core import signals
+
+_patched = False
 
 
 def parse_get_object(
@@ -37,51 +39,6 @@ def parse_reverse_get(
     """Extract reverse relationship lazy load context."""
     accessor, instance = args
     return accessor.field.rel_model, to_key(instance), accessor.field.backref
-
-
-def get_rel_instance(self: Any, instance: Any) -> Any:
-    """Custom FK accessor that emits lazy_load signals."""
-    value = instance.__data__.get(self.name)
-    if value is not None or self.name in instance.__rel__:
-        if self.name not in instance.__rel__:
-            signals.lazy_load.send(
-                signals.get_worker(),
-                args=(self, instance),
-                parser=parse_get_object,
-            )
-            obj = self.rel_model.get(self.field.rel_field == value)
-            instance.__rel__[self.name] = obj
-        return instance.__rel__[self.name]
-    elif not self.field.null:
-        raise self.rel_model.DoesNotExist
-    return value
-
-
-ForeignKeyAccessor.get_rel_instance = get_rel_instance
-
-
-def backref_get(
-    self: Any,
-    instance: Any,
-    instance_type: type | None = None,
-) -> Any:
-    """Custom backref accessor that marks queries for lazy_load detection."""
-    if instance is not None:
-        dest = self.field.rel_field.name
-        backref_query = self.rel_model.select().where(
-            self.field == getattr(instance, dest)
-        )
-        # Mark query with context so that we can emit a `lazy_load` signal
-        # if evaluated during `BaseQuery.execute`
-        backref_query._context = {
-            "args": (self, instance),
-            "kwargs": {"instance_type": instance_type},
-        }
-        return backref_query
-    return self
-
-
-BackrefAccessor.__get__ = backref_get
 
 
 def to_key(instance: Any) -> str:
@@ -105,50 +62,104 @@ def is_single(offset: int | None, limit: int | None) -> bool:
     return limit is not None and limit - (offset or 0) == 1
 
 
-# Emit `lazy_load` on ManyToManyQuery iteration
-_original_model_select_iter = BaseModelSelect.__iter__
+def apply_patches() -> None:
+    """Apply monkey patches to Peewee's ORM.
 
+    Safe to call multiple times (idempotent).
+    """
+    global _patched  # noqa: PLW0603
+    if _patched:
+        return
+    _patched = True
 
-def _model_select_iter(self: Any) -> Any:
-    """Wrapper that emits lazy_load for ManyToMany queries."""
-    if isinstance(self, ManyToManyQuery):
-        signals.lazy_load.send(
-            signals.get_worker(),
-            args=(self._accessor, self._instance),
-            parser=parse_get_object,
+    # --- FK accessor patches ---
+
+    def get_rel_instance(self: Any, instance: Any) -> Any:
+        """Custom FK accessor that emits lazy_load signals."""
+        value = instance.__data__.get(self.name)
+        if value is not None or self.name in instance.__rel__:
+            if self.name not in instance.__rel__:
+                signals.lazy_load.send(
+                    signals.get_worker(),
+                    args=(self, instance),
+                    parser=parse_get_object,
+                )
+                obj = self.rel_model.get(self.field.rel_field == value)
+                instance.__rel__[self.name] = obj
+            return instance.__rel__[self.name]
+        elif not self.field.null:
+            raise self.rel_model.DoesNotExist
+        return value
+
+    ForeignKeyAccessor.get_rel_instance = get_rel_instance
+
+    def backref_get(
+        self: Any,
+        instance: Any,
+        instance_type: type | None = None,
+    ) -> Any:
+        """Custom backref accessor that marks queries for lazy_load detection."""
+        if instance is not None:
+            dest = self.field.rel_field.name
+            backref_query = self.rel_model.select().where(
+                self.field == getattr(instance, dest)
+            )
+            backref_query._context = {
+                "args": (self, instance),
+                "kwargs": {"instance_type": instance_type},
+            }
+            return backref_query
+        return self
+
+    BackrefAccessor.__get__ = backref_get
+
+    # --- Query iteration patches ---
+
+    original_model_select_iter = BaseModelSelect.__iter__
+
+    def _model_select_iter(self: Any) -> Any:
+        """Wrapper that emits lazy_load for ManyToMany queries."""
+        if isinstance(self, ManyToManyQuery):
+            signals.lazy_load.send(
+                signals.get_worker(),
+                args=(self._accessor, self._instance),
+                parser=parse_get_object,
+            )
+        return original_model_select_iter(self)
+
+    BaseModelSelect.__iter__ = _model_select_iter
+
+    # --- Query execution patches ---
+
+    original_query_execute = BaseQuery.execute
+
+    def _query_execute(self: Any, database: Any) -> Any:
+        """Wrapper that emits load/ignore_load and lazy_load signals."""
+        ret = original_query_execute(self, database)
+        if hasattr(self, "_context"):
+            signals.lazy_load.send(
+                signals.get_worker(),
+                args=self._context["args"],
+                kwargs=self._context["kwargs"],
+                parser=parse_reverse_get,
+            )
+        if not isinstance(self, SelectQuery):
+            return ret
+        signal = (
+            signals.ignore_load
+            if is_single(self._offset, self._limit)
+            else signals.load
         )
-    return _original_model_select_iter(self)
-
-
-BaseModelSelect.__iter__ = _model_select_iter
-
-
-# Emit signals on query execution
-_original_query_execute = BaseQuery.execute
-
-
-def _query_execute(self: Any, database: Any) -> Any:
-    """Wrapper that emits load/ignore_load and lazy_load signals."""
-    ret = _original_query_execute(self, database)
-    if hasattr(self, "_context"):
-        signals.lazy_load.send(
+        signal.send(
             signals.get_worker(),
-            args=self._context["args"],
-            kwargs=self._context["kwargs"],
-            parser=parse_reverse_get,
+            args=(self,),
+            ret=list(ret),
+            parser=parse_load,
         )
-    if not isinstance(self, SelectQuery):
         return ret
-    signal = (
-        signals.ignore_load if is_single(self._offset, self._limit) else signals.load
-    )
-    signal.send(
-        signals.get_worker(),
-        args=(self,),
-        ret=list(ret),
-        parser=parse_load,
-    )
-    return ret
+
+    BaseQuery.execute = database_required(_query_execute)
 
 
-BaseQuery.execute = database_required(_query_execute)
+# Auto-apply on import (backward compat with `import nplusone.ext.peewee`)
+apply_patches()

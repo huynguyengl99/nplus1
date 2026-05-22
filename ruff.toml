@@ -7,7 +7,9 @@ select = ["B", "C90", "E", "F", "I", "N", "PL", "Q", "UP", "W"]
 [lint.per-file-ignores]
 "nplusone/core/listeners.py" = ["PLR0913", "C901"]  # Signal handlers require many args; prune has inherent branching
 "nplusone/core/profiler.py" = ["PLC0415"]  # Inline import for optional Django dependency
-"nplusone/ext/django/patch.py" = ["PLR0913"]
+"nplusone/ext/django/patch.py" = ["PLR0913", "PLR0915", "C901"]  # apply_patches is necessarily large
+"nplusone/ext/peewee.py" = ["C901"]  # apply_patches has inherent branching
+"nplusone/ext/sqlalchemy.py" = ["C901"]  # apply_patches has inherent branching
 "nplusone/ext/flask_sqlalchemy.py" = ["C901"]  # init_app has inherent branching
 "tests/utils.py" = ["PLC0415"]  # Inline import for optional SQLAlchemy dependency
 "tests/**" = ["B018", "N806", "PLR0913", "PLR2004", "C901"]  # Tests: lazy load triggers, model class vars, complexity
