@@ -70,12 +70,14 @@ def signalify_queryset(
     @functools.wraps(func)
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         queryset = func(*args, **kwargs)
+        if not isinstance(queryset, query.QuerySet):
+            return queryset  # prefetch cache may return a list
         ctx = copy.copy(context)
         ctx["args"] = context.get("args", args)
         ctx["kwargs"] = context.get("kwargs", kwargs)
-        queryset._clone = signalify_queryset(queryset._clone, parser=parser, **ctx)
-        queryset._fetch_all = _signalify_fetch_all(queryset, parser=parser, **ctx)
-        queryset._context = ctx
+        queryset._clone = signalify_queryset(queryset._clone, parser=parser, **ctx)  # type: ignore[attr-defined]
+        queryset._fetch_all = _signalify_fetch_all(queryset, parser=parser, **ctx)  # type: ignore[method-assign]
+        queryset._context = ctx  # type: ignore[attr-defined]
         return queryset
 
     return wrapped

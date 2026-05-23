@@ -9,11 +9,13 @@ from unittest import mock
 import pytest
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
+from django.db.models import Prefetch
+from django.db.models.query import prefetch_related_objects
 from django.http.request import HttpRequest
 from django.http.response import HttpResponse
 from nplusone.core import signals
 from nplusone.ext.django.middleware import NPlusOneMiddleware
-from nplusone.ext.django.patch import nplus1_context, setup_state
+from nplusone.ext.django.patch import get_worker, nplus1_context, setup_state
 
 from tests.testapp import models
 
@@ -675,6 +677,7 @@ class TestCreatePatternInvestigation:
 
 
 @pytest.mark.django_db()
+@pytest.mark.xdist_group("settings_mutation")
 class TestASGIThreadBoundary:
     """Tests for contextvars-based worker ID across sync_to_async boundaries.
 
@@ -685,8 +688,6 @@ class TestASGIThreadBoundary:
 
     def test_contextvars_overrides_thread_id(self) -> None:
         """When context var is set, get_worker returns it instead of thread ident."""
-        from nplusone.ext.django.patch import get_worker
-
         token = nplus1_context.set("test-worker")
         try:
             assert get_worker() == "test-worker"
@@ -695,8 +696,6 @@ class TestASGIThreadBoundary:
 
     def test_contextvars_fallback_to_thread_id(self) -> None:
         """Without context var set, get_worker falls back to thread ident."""
-        from nplusone.ext.django.patch import get_worker
-
         # Run in a fresh thread where no context var has been set
         result: list[tuple[str, str]] = []
 
@@ -813,7 +812,8 @@ class TestASGIThreadBoundary:
         # Listener never saw the signals → no eager load tracked, no report
         # (This confirms that sender-based scoping matters)
         eager_related = [
-            c for c in mock_logger.log.call_args_list
+            c
+            for c in mock_logger.log.call_args_list
             if len(c[0]) > 1 and "eager load" in c[0][1].lower()
         ]
         assert len(eager_related) == 0
@@ -868,14 +868,13 @@ class TestASGIThreadBoundary:
 
 
 @pytest.mark.django_db()
+@pytest.mark.xdist_group("settings_mutation")
 class TestGenericRelation:
     """Tests for GenericRelation (contenttypes) eager load tracking."""
 
     @pytest.fixture()
     def articles(self, db: Any) -> dict[str, Any]:
         """Create Article + Tag test data."""
-        from django.contrib.contenttypes.models import ContentType
-
         article = models.Article.objects.create(title="Test")
         ct = ContentType.objects.get_for_model(models.Article)
         tag = models.Tag.objects.create(
@@ -886,7 +885,7 @@ class TestGenericRelation:
     def test_prefetch_generic_relation_used(
         self, articles: Any, client: Any, logger: mock.Mock
     ) -> None:
-        """prefetch_related on GenericRelation should NOT false-positive when accessed."""
+        """prefetch_related on GenericRelation: no false positive."""
         client.get("/prefetch_generic_relation/")
         for call in logger.log.call_args_list:
             msg = call[0][1] if len(call[0]) > 1 else ""
@@ -902,3 +901,22 @@ class TestGenericRelation:
         assert logger.log.called, "Unused GenericRelation prefetch was not detected"
         logged_msg = logger.log.call_args[0][1]
         assert "Article.tags" in logged_msg
+
+    def test_prefetch_related_objects_generic_relation_no_crash(
+        self, articles: Any
+    ) -> None:
+        """prefetch_related_objects with GenericRelation returns a list from cache.
+
+        signalify_queryset must handle non-QuerySet return values
+        without raising AttributeError.
+        """
+        article = models.Article.objects.get(pk=articles["article"].pk)
+        prefetch_related_objects(
+            [article],
+            Prefetch("tags", queryset=models.Tag.objects.all()),
+        )
+        # This would raise AttributeError('list' has no '_clone')
+        # without the isinstance guard in signalify_queryset.
+        result = list(article.tags.all())
+        assert len(result) == 1
+        assert result[0].name == "python"
