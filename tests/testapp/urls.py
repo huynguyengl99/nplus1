@@ -55,4 +55,7 @@ urlpatterns = [
         "create_message_with_workspace_filter/",
         views.create_message_with_workspace_filter,
     ),
+    # GenericRelation
+    path("prefetch_generic_relation/", views.prefetch_generic_relation),
+    path("prefetch_generic_relation_unused/", views.prefetch_generic_relation_unused),
 ]

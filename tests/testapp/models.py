@@ -1,5 +1,7 @@
 """Django models for the nplusone test application."""
 
+from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelation
+from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
 
@@ -138,6 +140,31 @@ class Message(models.Model):
         Conversation, on_delete=models.CASCADE, related_name="messages"
     )
     content = models.TextField(default="")
+
+    class Meta:
+        app_label = "testapp"
+
+
+# --- GenericRelation test models ---
+
+
+class Tag(models.Model):
+    """Tag attached to any model via GenericForeignKey."""
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    content_object = GenericForeignKey("content_type", "object_id")
+    name = models.CharField(max_length=100, default="")
+
+    class Meta:
+        app_label = "testapp"
+
+
+class Article(models.Model):
+    """Article with tags via GenericRelation."""
+
+    title = models.CharField(max_length=200, default="")
+    tags = GenericRelation(Tag)
 
     class Meta:
         app_label = "testapp"

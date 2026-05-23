@@ -244,6 +244,23 @@ def create_message_with_conversation_lookup(request):
     return HttpResponse(f"{message.id}:{message.content}")
 
 
+# --- GenericRelation views ---
+
+
+def prefetch_generic_relation(request):
+    """View with prefetch_related on GenericRelation - used."""
+    articles = list(models.Article.objects.prefetch_related("tags").all())
+    for article in articles:
+        list(article.tags.all())
+    return HttpResponse("ok")
+
+
+def prefetch_generic_relation_unused(request):
+    """View with prefetch_related on GenericRelation - unused."""
+    articles = list(models.Article.objects.prefetch_related("tags").all())
+    return HttpResponse(str(articles[0].title))
+
+
 def create_message_with_workspace_filter(request):
     """Simulates message create where the queryset filters through workspace.
 

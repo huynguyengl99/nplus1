@@ -1,3 +1,4 @@
+exclude = ["tests/testapp/migrations"]
 src = ["nplusone", "tests"]
 target-version = "py311"
 

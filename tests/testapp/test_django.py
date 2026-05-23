@@ -1,14 +1,19 @@
 """Tests for Django integration."""
 
+import contextvars
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest import mock
 
 import pytest
 from django.conf import settings
+from django.contrib.contenttypes.models import ContentType
 from django.http.request import HttpRequest
 from django.http.response import HttpResponse
+from nplusone.core import signals
 from nplusone.ext.django.middleware import NPlusOneMiddleware
-from nplusone.ext.django.patch import setup_state
+from nplusone.ext.django.patch import nplus1_context, setup_state
 
 from tests.testapp import models
 
@@ -667,3 +672,233 @@ class TestCreatePatternInvestigation:
                         f"False positive: {flagged_msg} — workspace was only "
                         f"in a WHERE filter, not select_related"
                     )
+
+
+@pytest.mark.django_db()
+class TestASGIThreadBoundary:
+    """Tests for contextvars-based worker ID across sync_to_async boundaries.
+
+    Django ASGI runs middleware on the main async thread but dispatches
+    views to a thread pool via sync_to_async. contextvars propagation
+    ensures the same worker ID is visible across both threads.
+    """
+
+    def test_contextvars_overrides_thread_id(self) -> None:
+        """When context var is set, get_worker returns it instead of thread ident."""
+        from nplusone.ext.django.patch import get_worker
+
+        token = nplus1_context.set("test-worker")
+        try:
+            assert get_worker() == "test-worker"
+        finally:
+            nplus1_context.reset(token)
+
+    def test_contextvars_fallback_to_thread_id(self) -> None:
+        """Without context var set, get_worker falls back to thread ident."""
+        from nplusone.ext.django.patch import get_worker
+
+        # Run in a fresh thread where no context var has been set
+        result: list[tuple[str, str]] = []
+
+        def check() -> None:
+            result.append((get_worker(), str(threading.current_thread().ident)))
+
+        t = threading.Thread(target=check)
+        t.start()
+        t.join()
+        assert result[0][0] == result[0][1]
+
+    def test_middleware_sets_context_var(self, objects: Any) -> None:
+        """process_request sets the contextvars-based worker ID."""
+        middleware = NPlusOneMiddleware(lambda req: HttpResponse("ok"))
+        request = HttpRequest()
+        request.method = "GET"
+        request.path = "/test/"
+        middleware.process_request(request)
+        try:
+            assert nplus1_context.get() == str(id(request))
+        finally:
+            middleware.process_response(request, HttpResponse("ok"))
+
+    def test_eager_load_across_threads_no_false_positive(
+        self, objects: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Eager load used in a worker thread should NOT produce false positive.
+
+        Simulates ASGI flow by emitting signals directly:
+        1. Main thread: middleware.process_request() sets up listeners
+        2. Worker thread: emit eager_load + touch signals (contextvars propagated)
+        3. Main thread: middleware.process_response() tears down
+
+        Uses direct signal emission to avoid SQLite cross-thread locking.
+        """
+        mock_logger = mock.Mock()
+        monkeypatch.setattr(settings, "NPLUSONE_LOGGER", mock_logger)
+
+        middleware = NPlusOneMiddleware(lambda req: HttpResponse("ok"))
+        request = HttpRequest()
+        request.method = "GET"
+        request.path = "/test-asgi/"
+
+        # Step 1: Main thread — set up listeners
+        middleware.process_request(request)
+
+        # Step 2: Worker thread — emit signals with contextvars propagated
+        ctx = contextvars.copy_context()
+        instances = ["User:1", "User:2"]
+
+        def eager_parser(*_args: Any) -> tuple[type, str, list[str], int]:
+            return (models.User, "addresses", instances, id(instances))
+
+        def touch_parser(*_args: Any) -> tuple[type, str, list[str]]:
+            return (models.User, "addresses", instances)
+
+        def worker() -> None:
+            worker_id = signals.get_worker()
+            signals.eager_load.send(worker_id, parser=eager_parser)
+            signals.touch.send(worker_id, parser=touch_parser)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(ctx.run, worker)
+            future.result()
+
+        # Step 3: Main thread — tear down listeners
+        response = HttpResponse("ok")
+        middleware.process_response(request, response)
+
+        # Should NOT report false positive for unused eager load
+        for call in mock_logger.log.call_args_list:
+            msg = call[0][1] if len(call[0]) > 1 else ""
+            assert "unnecessary eager load" not in msg.lower(), (
+                f"False positive eager load detected across thread boundary: {msg}"
+            )
+
+    def test_eager_load_across_threads_false_positive_without_contextvars(
+        self, objects: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without contextvars, cross-thread signals would be invisible.
+
+        Verifies that when signals are emitted with a different sender
+        (simulating the old thread-ident behavior), the listener misses
+        them and reports a false positive.
+        """
+        mock_logger = mock.Mock()
+        monkeypatch.setattr(settings, "NPLUSONE_LOGGER", mock_logger)
+
+        middleware = NPlusOneMiddleware(lambda req: HttpResponse("ok"))
+        request = HttpRequest()
+        request.method = "GET"
+        request.path = "/test-no-ctx/"
+
+        # Step 1: Main thread — set up listeners
+        middleware.process_request(request)
+
+        instances = ["User:1"]
+
+        def eager_parser(*_args: Any) -> tuple[type, str, list[str], int]:
+            return (models.User, "addresses", instances, id(instances))
+
+        def touch_parser(*_args: Any) -> tuple[type, str, list[str]]:
+            return (models.User, "addresses", instances)
+
+        # Emit with a DIFFERENT sender (simulating old thread-ident behavior)
+        wrong_worker = "wrong-thread-id"
+        signals.eager_load.send(wrong_worker, parser=eager_parser)
+        signals.touch.send(wrong_worker, parser=touch_parser)
+
+        # Step 3: Main thread — tear down listeners
+        response = HttpResponse("ok")
+        middleware.process_response(request, response)
+
+        # Listener never saw the signals → no eager load tracked, no report
+        # (This confirms that sender-based scoping matters)
+        eager_related = [
+            c for c in mock_logger.log.call_args_list
+            if len(c[0]) > 1 and "eager load" in c[0][1].lower()
+        ]
+        assert len(eager_related) == 0
+
+    def test_lazy_load_across_threads_detected(
+        self, objects: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lazy load (N+1) in a worker thread should still be detected.
+
+        Simulates ASGI flow by emitting signals directly with
+        contextvars propagation to a worker thread.
+        """
+        mock_logger = mock.Mock()
+        monkeypatch.setattr(settings, "NPLUSONE_LOGGER", mock_logger)
+
+        middleware = NPlusOneMiddleware(lambda req: HttpResponse("ok"))
+        request = HttpRequest()
+        request.method = "GET"
+        request.path = "/test-asgi-lazy/"
+
+        # Step 1: Main thread — set up listeners
+        middleware.process_request(request)
+
+        # Step 2: Worker thread — emit load + lazy_load signals
+        ctx = contextvars.copy_context()
+
+        def load_parser(*_args: Any) -> set[str]:
+            return {"Occupation:1", "Occupation:2"}
+
+        def lazy_parser(*_args: Any) -> tuple[type, str, str]:
+            return (models.Occupation, "Occupation:1", "user")
+
+        def worker() -> None:
+            worker_id = signals.get_worker()
+            signals.load.send(worker_id, parser=load_parser)
+            signals.lazy_load.send(worker_id, parser=lazy_parser)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(ctx.run, worker)
+            future.result()
+
+        # Step 3: Main thread — tear down listeners
+        response = HttpResponse("ok")
+        middleware.process_response(request, response)
+
+        # Should detect the N+1 lazy load
+        assert mock_logger.log.called, (
+            "N+1 lazy load across thread boundary was not detected"
+        )
+        logged_msg = mock_logger.log.call_args[0][1]
+        assert "Occupation.user" in logged_msg
+
+
+@pytest.mark.django_db()
+class TestGenericRelation:
+    """Tests for GenericRelation (contenttypes) eager load tracking."""
+
+    @pytest.fixture()
+    def articles(self, db: Any) -> dict[str, Any]:
+        """Create Article + Tag test data."""
+        from django.contrib.contenttypes.models import ContentType
+
+        article = models.Article.objects.create(title="Test")
+        ct = ContentType.objects.get_for_model(models.Article)
+        tag = models.Tag.objects.create(
+            content_type=ct, object_id=article.pk, name="python"
+        )
+        return {"article": article, "tag": tag}
+
+    def test_prefetch_generic_relation_used(
+        self, articles: Any, client: Any, logger: mock.Mock
+    ) -> None:
+        """prefetch_related on GenericRelation should NOT false-positive when accessed."""
+        client.get("/prefetch_generic_relation/")
+        for call in logger.log.call_args_list:
+            msg = call[0][1] if len(call[0]) > 1 else ""
+            assert "unnecessary eager load" not in msg.lower(), (
+                f"False positive on GenericRelation: {msg}"
+            )
+
+    def test_prefetch_generic_relation_unused(
+        self, articles: Any, client: Any, logger: mock.Mock
+    ) -> None:
+        """prefetch_related on GenericRelation SHOULD flag when NOT accessed."""
+        client.get("/prefetch_generic_relation_unused/")
+        assert logger.log.called, "Unused GenericRelation prefetch was not detected"
+        logged_msg = logger.log.call_args[0][1]
+        assert "Article.tags" in logged_msg

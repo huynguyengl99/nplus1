@@ -14,6 +14,7 @@ from django.conf import settings
 from django.utils.deprecation import MiddlewareMixin
 
 from nplusone.core import listeners, notifiers
+from nplusone.ext.django.patch import nplus1_context
 
 # Built-in allowlist for models that are known to use internal caching
 # (track.md Issue 7: ContentType lookups are cached by Django)
@@ -110,6 +111,9 @@ class NPlusOneMiddleware(MiddlewareMixin):
         self.load_config()
         if not getattr(settings, "NPLUSONE_ENABLED", True):
             return
+        # Bind a request-scoped worker ID via contextvars so that the same
+        # ID is visible across sync_to_async thread boundaries (ASGI).
+        nplus1_context.set(str(id(request)))
         self._listeners[request] = self._listeners.get(request, {})
         for name, listener_type in listeners.listeners.items():
             self._listeners[request][name] = listener_type(self)

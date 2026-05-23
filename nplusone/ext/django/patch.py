@@ -5,6 +5,7 @@ Patches are applied lazily via ``apply_patches()`` — only when
 in Django settings, no patching occurs and there is zero runtime overhead.
 """
 
+import contextvars
 import copy
 import functools
 import importlib
@@ -13,6 +14,7 @@ import threading
 from typing import Any
 
 from django.conf import settings
+from django.contrib.contenttypes.fields import create_generic_related_manager
 from django.db.models import Model, query
 from django.db.models.fields.related_descriptors import (
     ForwardManyToOneDescriptor,
@@ -26,9 +28,19 @@ from nplusone.core import signals
 _patched = False
 
 
+nplus1_context: contextvars.ContextVar[str] = contextvars.ContextVar("nplus1_worker")
+
+
 def get_worker() -> str:
-    """Get thread ID as the worker identifier for Django."""
-    return str(threading.current_thread().ident)
+    """Get the current worker identifier for Django.
+
+    Uses a contextvars-based ID when set (ASGI-safe), falling back to
+    thread ID for WSGI compatibility.
+    """
+    try:
+        return nplus1_context.get()
+    except LookupError:
+        return str(threading.current_thread().ident)
 
 
 def setup_state() -> None:
@@ -182,6 +194,17 @@ def parse_foreign_related_queryset(
     return model, to_key(descriptor.instance), name
 
 
+def parse_generic_related_queryset(
+    args: tuple[Any, ...] | None,
+    kwargs: dict[str, Any] | None,
+    context: dict[str, Any],
+) -> tuple[type, str, str]:
+    """Parse GenericRelation queryset creation."""
+    manager = context["args"][0]
+    instance = manager.instance
+    return instance.__class__, to_key(instance), manager.prefetch_cache_name
+
+
 def parse_get(
     args: tuple[Any, ...] | None,
     kwargs: dict[str, Any] | None,
@@ -232,6 +255,12 @@ def parse_fetch_all(
             return (
                 instance.__class__,
                 _parse_manager_field(manager, self._context["rel"]),
+                [to_key(instance)],
+            )
+        elif manager.__class__.__name__ == "GenericRelatedObjectManager":
+            return (
+                instance.__class__,
+                manager.prefetch_cache_name,
                 [to_key(instance)],
             )
         else:
@@ -351,6 +380,7 @@ def apply_patches() -> None:
     # Cache signatures for manager creation functions
     m2m_sig = inspect.signature(create_forward_many_to_many_manager)
     rev_m2o_sig = inspect.signature(create_reverse_many_to_one_manager)
+    gen_rel_sig = inspect.signature(create_generic_related_manager)
 
     # --- Lazy load detection patches ---
 
@@ -410,6 +440,23 @@ def apply_patches() -> None:
     _patch_module(
         create_reverse_many_to_one_manager,
         _create_reverse_many_to_one_manager,
+    )
+
+    def _create_generic_related_manager(*args: Any, **kwargs: Any) -> Any:
+        bound = gen_rel_sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        ctx = dict(bound.arguments)
+        manager = create_generic_related_manager(*args, **kwargs)
+        manager.get_queryset = signalify_queryset(
+            manager.get_queryset,
+            parser=parse_generic_related_queryset,
+            **ctx,
+        )
+        return manager
+
+    _patch_module(
+        create_generic_related_manager,
+        _create_generic_related_manager,
     )
 
     # --- Touch signal patches (for eager load tracking) ---
