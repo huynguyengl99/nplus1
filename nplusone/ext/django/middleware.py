@@ -58,6 +58,8 @@ class NPlusOneMiddleware(MiddlewareMixin):
     - NPLUSONE_REPORT_MODE: "immediate" (default) or "batch".
       In batch mode, all detections are collected and reported together
       at the end of the request.
+    - NPLUSONE_EXCLUDE_URLS: List of URL prefixes to skip detection for
+      (e.g. ``["/admin/"]``). All detection is skipped for matching requests.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -93,6 +95,7 @@ class NPlusOneMiddleware(MiddlewareMixin):
         self.eager_load_skip = getattr(settings, "NPLUSONE_EAGER_LOAD_SKIP", None)
         self.debug = getattr(settings, "NPLUSONE_DEBUG", False)
         self.report_mode = getattr(settings, "NPLUSONE_REPORT_MODE", "immediate")
+        self.exclude_urls: list[str] = getattr(settings, "NPLUSONE_EXCLUDE_URLS", [])
 
     def _should_skip_eager(self, request: Any, response: Any) -> bool:
         """Determine whether to skip eager load checks for this response.
@@ -110,6 +113,10 @@ class NPlusOneMiddleware(MiddlewareMixin):
         """Set up detection listeners for the current request."""
         self.load_config()
         if not getattr(settings, "NPLUSONE_ENABLED", True):
+            return
+        if self.exclude_urls and any(
+            request.path.startswith(prefix) for prefix in self.exclude_urls
+        ):
             return
         # Bind a request-scoped worker ID via contextvars so that the same
         # ID is visible across sync_to_async thread boundaries (ASGI).

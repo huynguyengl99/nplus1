@@ -920,3 +920,60 @@ class TestGenericRelation:
         result = list(article.tags.all())
         assert len(result) == 1
         assert result[0].name == "python"
+
+
+@pytest.mark.django_db()
+@pytest.mark.xdist_group("settings_mutation")
+class TestExcludeURLs:
+    """Tests for NPLUSONE_EXCLUDE_URLS setting."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_exclude(self) -> Any:
+        yield
+        if hasattr(settings, "NPLUSONE_EXCLUDE_URLS"):
+            delattr(settings, "NPLUSONE_EXCLUDE_URLS")
+
+    def test_excluded_url_skips_detection(
+        self,
+        objects: Any,
+        client: Any,
+        logger: mock.Mock,
+    ) -> None:
+        """Requests matching excluded URL prefixes should skip detection."""
+        settings.NPLUSONE_EXCLUDE_URLS = ["/one_to_one"]  # type: ignore[attr-defined]
+        client.get("/one_to_one/")
+        assert not logger.log.called
+
+    def test_non_excluded_url_still_detects(
+        self,
+        objects: Any,
+        client: Any,
+        logger: mock.Mock,
+    ) -> None:
+        """Requests NOT matching excluded URLs should still detect."""
+        settings.NPLUSONE_EXCLUDE_URLS = ["/admin/"]  # type: ignore[attr-defined]
+        client.get("/one_to_one/")
+        assert logger.log.called
+        assert "Occupation.user" in logger.log.call_args[0][1]
+
+    def test_multiple_exclude_prefixes(
+        self,
+        objects: Any,
+        client: Any,
+        logger: mock.Mock,
+    ) -> None:
+        """Multiple prefixes should all be checked."""
+        settings.NPLUSONE_EXCLUDE_URLS = ["/admin/", "/one_to_one"]  # type: ignore[attr-defined]
+        client.get("/one_to_one/")
+        assert not logger.log.called
+
+    def test_empty_exclude_urls(
+        self,
+        objects: Any,
+        client: Any,
+        logger: mock.Mock,
+    ) -> None:
+        """Empty list should not skip anything."""
+        settings.NPLUSONE_EXCLUDE_URLS = []  # type: ignore[attr-defined]
+        client.get("/one_to_one/")
+        assert logger.log.called

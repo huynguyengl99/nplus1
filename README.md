@@ -128,6 +128,7 @@ All settings work across Django, Flask, and Celery:
 | `NPLUSONE_SKIP_EAGER_ON_ERROR` | `True` | Skip eager load checks on error responses (>= 400). |
 | `NPLUSONE_EAGER_LOAD_SKIP` | `None` | Callable `(request, response) -> bool` for custom skip logic. |
 | `NPLUSONE_SKIP_EMPTY_PREFETCH` | `False` | Skip flagging `prefetch_related` that returns zero rows. |
+| `NPLUSONE_EXCLUDE_URLS` | `[]` | List of URL prefixes to skip all detection for (e.g. `["/admin/"]`). |
 
 ### Whitelisting
 
@@ -139,6 +140,18 @@ NPLUSONE_WHITELIST = [
     {"model": "myapp.User"},                      # Django app_label.Model format
     {"model": "User*"},                           # fnmatch wildcard
     {"label": "unused_eager_load"},               # suppress all eager load warnings
+]
+```
+
+### URL Exclusion
+
+Skip detection entirely for URL prefixes where detections are unfixable
+(e.g. Django admin internals):
+
+```python
+NPLUSONE_EXCLUDE_URLS = [
+    "/admin/",
+    "/debug/",
 ]
 ```
 
