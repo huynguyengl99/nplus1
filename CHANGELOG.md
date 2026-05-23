@@ -1,3 +1,10 @@
+## v1.0.1 (2026-05-23)
+
+### Fix
+
+- guard signalify_queryset against non-QuerySet return values
+- use contextvars for ASGI thread safety and add GenericRelation touch hook
+
 ## v1.0.0 (2026-05-22)
 
 ### Feat
