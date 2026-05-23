@@ -1,3 +1,9 @@
+## v1.1.0 (2026-05-23)
+
+### Feat
+
+- add NPLUSONE_EXCLUDE_URLS to skip detection by URL prefix
+
 ## v1.0.1 (2026-05-23)
 
 ### Fix
