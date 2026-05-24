@@ -91,6 +91,25 @@ def prefetch_many_to_many_unused(request):
     return HttpResponse(users[0])
 
 
+def prefetch_many_to_many_drf_style(request):
+    """Simulate DRF PrimaryKeyRelatedField(many=True) access pattern.
+
+    DRF's ManyRelatedField.get_attribute() accesses the manager via descriptor,
+    calls .all(), then iterates to serialize PKs. This is the pattern that
+    triggered false-positive "unused eager load" before the ManyToManyDescriptor
+    touch patch.
+    """
+    users = list(models.User.objects.all().prefetch_related("hobbies"))
+    # Simulate DRF serialization: access manager, call .all(), iterate for PKs
+    result = []
+    for user in users:
+        relationship = user.hobbies  # descriptor __get__ -> manager
+        queryset = relationship.all()  # manager.all() -> prefetch cache
+        pks = [obj.pk for obj in queryset]  # iterate -> consume prefetched data
+        result.append(pks)
+    return HttpResponse(str(result))
+
+
 def prefetch_many_to_many_single(request):
     """View indexing into prefetched M2M."""
     hobbies = models.Hobby.objects.all().prefetch_related("users")

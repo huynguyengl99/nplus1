@@ -10,12 +10,18 @@ import pytest
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Prefetch
+from django.db.models.fields.related_descriptors import ManyToManyDescriptor
 from django.db.models.query import prefetch_related_objects
 from django.http.request import HttpRequest
 from django.http.response import HttpResponse
-from nplusone.core import signals
+from nplusone.core import listeners, signals
 from nplusone.ext.django.middleware import NPlusOneMiddleware
-from nplusone.ext.django.patch import get_worker, nplus1_context, setup_state
+from nplusone.ext.django.patch import (
+    get_worker,
+    nplus1_context,
+    parse_many_to_many_descriptor_get,
+    setup_state,
+)
 
 from tests.testapp import models
 
@@ -271,6 +277,64 @@ class TestIntegration:
     ) -> None:
         client.get("/prefetch_many_to_many_no_related/")
         assert not logger.log.called
+
+    def test_prefetch_many_to_many_drf_style(
+        self, objects: Any, client: Any, logger: mock.Mock
+    ) -> None:
+        """DRF-style access: descriptor -> manager -> .all() -> iterate PKs.
+
+        Regression test for false-positive "unused eager load" on M2M fields
+        when the manager class was cached before apply_patches() ran, causing
+        signalify_queryset to never wrap get_queryset() and _context to be
+        missing from the prefetch-cached queryset.
+        """
+        client.get("/prefetch_many_to_many_drf_style/")
+        assert not logger.log.called
+
+    def test_prefetch_many_to_many_touch_signal(self, objects: Any) -> None:
+        """Verify ManyToManyDescriptor.__get__ emits touch for prefetched M2M.
+
+        This test directly verifies that accessing a prefetched M2M field
+        through the descriptor emits a touch signal with the correct
+        model/field info, which allows EagerTracker to prune the eager_load.
+
+        The ManyToManyDescriptor.__get__ patch is needed because the M2M
+        manager class may be cached before apply_patches() replaces the
+        factory function (e.g. django.contrib.auth models), leaving
+        get_queryset() unwrapped and _context unset on prefetch-cached
+        querysets.
+        """
+        # Verify the descriptor __get__ is patched (wired up by apply_patches)
+        assert hasattr(ManyToManyDescriptor.__get__, "__wrapped__"), (
+            "ManyToManyDescriptor.__get__ is not patched by signalify — "
+            "touch signal will not fire for M2M descriptor access"
+        )
+
+        users = list(models.User.objects.prefetch_related("hobbies"))
+        user = users[0]
+
+        # Directly invoke the parser as it would be called from signalify.
+        # args mirrors what ManyToManyDescriptor.__get__ receives.
+        descriptor = models.User.__dict__["hobbies"]
+        result = parse_many_to_many_descriptor_get(
+            args=(descriptor, user, type(user)), kwargs=None, context=None
+        )
+        assert result is not None, (
+            "parse_many_to_many_descriptor_get returned None — "
+            "prefetch cache not detected for User.hobbies"
+        )
+        model, field, instances = result
+        assert model is models.User
+        assert field == "hobbies"
+        assert f"User:{user.pk}" in instances
+
+        # Verify EagerTracker can prune with this touch
+        tracker = listeners.EagerTracker()
+        tracker.track(models.User, "hobbies", [f"User:{user.pk}"], key=id(users))
+        tracker.prune([result])
+        assert not tracker.unused, (
+            f"EagerTracker still reports User.hobbies as unused: {tracker.unused}"
+        )
 
     def test_select_one_to_one(
         self, objects: Any, client: Any, logger: mock.Mock

@@ -17,6 +17,10 @@ urlpatterns = [
     path("many_to_many_impossible_one/", views.many_to_many_impossible_one),
     path("prefetch_many_to_many_render/", views.prefetch_many_to_many_render),
     path("prefetch_many_to_many_unused/", views.prefetch_many_to_many_unused),
+    path(
+        "prefetch_many_to_many_drf_style/",
+        views.prefetch_many_to_many_drf_style,
+    ),
     path("prefetch_many_to_many_single/", views.prefetch_many_to_many_single),
     path(
         "prefetch_many_to_many_no_related/",

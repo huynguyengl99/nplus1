@@ -18,6 +18,7 @@ from django.contrib.contenttypes.fields import create_generic_related_manager
 from django.db.models import Model, query
 from django.db.models.fields.related_descriptors import (
     ForwardManyToOneDescriptor,
+    ManyToManyDescriptor,
     ReverseOneToOneDescriptor,
     create_forward_many_to_many_manager,
     create_reverse_many_to_one_manager,
@@ -241,6 +242,38 @@ def parse_reverse_one_to_one_get(
         return None
     model, field = parse_field(descriptor.related.field)
     return model, field, [to_key(instance)]
+
+
+def parse_many_to_many_descriptor_get(
+    args: tuple[Any, ...] | None,
+    kwargs: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+) -> tuple[type, str, list[str]] | None:
+    """Parse ManyToMany/ReverseManyToOne descriptor __get__ for touch signals.
+
+    Only emits a touch when the instance has prefetched data for this field,
+    ensuring we don't spuriously mark non-prefetched accesses.
+    """
+    descriptor, instance = args[:2]  # type: ignore[index]
+    if instance is None:
+        return None
+    prefetch_cache = getattr(instance, "_prefetched_objects_cache", None)
+    if not prefetch_cache:
+        return None
+    # Determine the prefetch cache name based on descriptor direction.
+    # Forward M2M (e.g. User.hobbies): cache key = field.name
+    # Reverse M2M (e.g. Hobby.users): cache key = field.related_query_name()
+    if not hasattr(descriptor, "field"):
+        return None
+    if getattr(descriptor, "reverse", False):
+        cache_name = descriptor.field.related_query_name()
+    else:
+        cache_name = descriptor.field.name
+    # Only emit touch if prefetch cache is populated for this field
+    if cache_name not in prefetch_cache:
+        return None
+    model = instance.__class__
+    return model, cache_name, [to_key(instance)]
 
 
 def parse_fetch_all(
@@ -475,6 +508,16 @@ def apply_patches() -> None:
         signals.touch,
         ReverseOneToOneDescriptor.__get__,
         parser=parse_reverse_one_to_one_get,
+    )
+
+    # Emit `touch` on ManyToMany descriptor access (only when prefetch cache
+    # is populated). This covers the case where the M2M manager class was
+    # created before apply_patches() replaced the factory function, so its
+    # get_queryset() is not wrapped by signalify_queryset.
+    ManyToManyDescriptor.__get__ = signals.signalify(  # type: ignore[method-assign]
+        signals.touch,
+        ManyToManyDescriptor.__get__,
+        parser=parse_many_to_many_descriptor_get,
     )
 
     # --- Load/ignore_load signal patches ---
