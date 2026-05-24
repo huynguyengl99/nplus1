@@ -1,3 +1,9 @@
+## v1.1.1 (2026-05-24)
+
+### Fix
+
+- emit touch signal from ManyToManyDescriptor.__get__ for prefetched M2M fields
+
 ## v1.1.0 (2026-05-23)
 
 ### Feat
