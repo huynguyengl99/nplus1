@@ -1,3 +1,9 @@
+## v1.1.2 (2026-06-08)
+
+### Fix
+
+- use strong Blinker receivers for scoped listener methods
+
 ## v1.1.1 (2026-05-24)
 
 ### Fix

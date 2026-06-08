@@ -91,7 +91,7 @@ license = {file = "LICENSE"}
 name = "nplus1"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
-version = "1.1.1"
+version = "1.1.2"
 
 [project.optional-dependencies]
 celery = ["celery>=5.3"]
