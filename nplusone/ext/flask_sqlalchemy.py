@@ -103,6 +103,14 @@ class NPlusOne:
                     "REQUEST START: %s %s", request.method, request.path
                 )
 
+        @app.teardown_request
+        def ensure_cleanup(exc: BaseException | None = None) -> None:
+            listener_dict = getattr(g, "listeners", None)
+            if listener_dict:
+                for listener in listener_dict.values():
+                    listener.cleanup()
+                g.listeners = {}
+
         @app.after_request
         def disconnect(response: Any) -> Any:
             if not getattr(g, "listeners", None):

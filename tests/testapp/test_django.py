@@ -7,6 +7,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from asgiref.sync import async_to_sync, iscoroutinefunction
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Prefetch
@@ -987,6 +988,47 @@ class TestGenericRelation:
 
 
 @pytest.mark.django_db()
+class TestExceptionCleanup:
+    """Tests that listeners are cleaned up when the inner middleware chain raises."""
+
+    def test_call_cleans_up_on_exception(self, objects: Any) -> None:
+        """__call__ disconnects listeners when get_response raises."""
+
+        def exploding_get_response(request: Any) -> Any:
+            raise RuntimeError("boom")
+
+        middleware = NPlusOneMiddleware(exploding_get_response)
+        request = HttpRequest()
+        request.method = "GET"
+        request.path = "/test/"
+
+        with pytest.raises(RuntimeError, match="boom"):
+            middleware(request)
+
+        assert not middleware._listeners.get(request, {})
+
+    def test_acall_cleans_up_on_exception(self, objects: Any) -> None:
+        """Async __call__ path must disconnect listeners when the chain raises."""
+
+        async def exploding_get_response(request: Any) -> Any:
+            raise RuntimeError("async boom")
+
+        middleware = NPlusOneMiddleware(exploding_get_response)
+        assert iscoroutinefunction(middleware)
+
+        request = HttpRequest()
+        request.method = "GET"
+        request.path = "/test/"
+
+        async def drive() -> Any:
+            return await middleware(request)
+
+        with pytest.raises(RuntimeError, match="async boom"):
+            async_to_sync(drive)()
+
+        assert not middleware._listeners.get(request, {})
+
+
 @pytest.mark.xdist_group("settings_mutation")
 class TestExcludeURLs:
     """Tests for NPLUSONE_EXCLUDE_URLS setting."""

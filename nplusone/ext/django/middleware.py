@@ -7,9 +7,10 @@ configures notification backends from Django settings.
 import fnmatch
 import logging
 import weakref
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
+from asgiref.sync import iscoroutinefunction, sync_to_async
 from django.conf import settings
 from django.utils.deprecation import MiddlewareMixin
 
@@ -108,6 +109,41 @@ class NPlusOneMiddleware(MiddlewareMixin):
         if self.skip_eager_on_error and hasattr(response, "status_code"):
             return bool(response.status_code >= _HTTP_ERROR_STATUS_THRESHOLD)
         return False
+
+    def __call__(self, request: Any) -> Any:
+        """Wrap the middleware chain to guarantee listener cleanup on exceptions.
+
+        In async mode ``super().__call__`` returns a coroutine awaited later, so
+        cleanup must live inside the awaited ``_acall`` rather than this frame.
+        """
+        # asgiref's iscoroutinefunction (not inspect's) is required: on Python
+        # 3.11 inspect's can't detect markcoroutinefunction-marked instances.
+        if iscoroutinefunction(self):  # pyright: ignore[reportDeprecated]
+            return self._acall(request)
+        try:
+            return super().__call__(request)
+        except Exception:
+            self._cleanup_listeners(request)
+            raise
+
+    async def _acall(self, request: Any) -> Any:
+        """Async counterpart of ``__call__`` with exception cleanup.
+
+        Cleanup runs via ``sync_to_async(thread_sensitive=True)`` so the
+        contextvars worker ID matches the normal teardown's for disconnects.
+        """
+        try:
+            return await cast(Awaitable[Any], super().__call__(request))
+        except Exception:
+            await sync_to_async(self._cleanup_listeners, thread_sensitive=True)(request)
+            raise
+
+    def _cleanup_listeners(self, request: Any) -> None:
+        """Disconnect all listeners without reporting (emergency cleanup)."""
+        for name in list(listeners.listeners.keys()) + ["debug"]:
+            listener = self._listeners.get(request, {}).pop(name, None)
+            if listener:
+                listener.cleanup()
 
     def process_request(self, request: Any) -> None:
         """Set up detection listeners for the current request."""

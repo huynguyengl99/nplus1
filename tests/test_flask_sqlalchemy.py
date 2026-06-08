@@ -377,3 +377,34 @@ class TestNPlusOne:
         app.config["NPLUSONE_RAISE"] = True
         with pytest.raises(exceptions.NPlusOneError):
             client.get("/many_to_many/")
+
+
+class TestTeardownRequestCleanup:
+    """Tests that teardown_request cleans up listeners on exception."""
+
+    def test_listeners_cleaned_on_view_exception(
+        self,
+        app: flask.Flask,
+        wrapper: NPlusOne,
+        objects: Any,
+        sa_models: Any,
+        logger: mock.Mock,
+    ) -> None:
+        """Listeners are disconnected even when the view raises an exception."""
+
+        @app.route("/exploding/")
+        def exploding() -> str:
+            sa_models.User.query.all()
+            raise RuntimeError("boom")
+
+        @app.route("/healthy/")
+        def healthy() -> str:
+            return "ok"
+
+        test_client = app.test_client()
+        with pytest.raises(RuntimeError, match="boom"):
+            test_client.get("/exploding/")
+
+        # A second request succeeding confirms teardown_request cleaned up.
+        resp = test_client.get("/healthy/")
+        assert resp.status_code == 200

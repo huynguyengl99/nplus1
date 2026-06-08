@@ -137,9 +137,9 @@ class LazyListener(Listener):
         self.loaded: set[str] = set()
         self.ignored: set[str] = set()
         worker = signals.get_worker()
-        signals.load.connect(self.handle_load, sender=worker)
-        signals.ignore_load.connect(self.handle_ignore, sender=worker)
-        signals.lazy_load.connect(self.handle_lazy, sender=worker)
+        signals.load.connect(self.handle_load, sender=worker, weak=False)
+        signals.ignore_load.connect(self.handle_ignore, sender=worker, weak=False)
+        signals.lazy_load.connect(self.handle_lazy, sender=worker, weak=False)
 
     def cleanup(self) -> None:
         """Disconnect signal handlers without reporting."""
@@ -203,7 +203,8 @@ class EagerListener(Listener):
 
     def setup(self) -> None:
         """Connect to eager_load signal."""
-        signals.eager_load.connect(self.handle_eager, sender=signals.get_worker())
+        worker = signals.get_worker()
+        signals.eager_load.connect(self.handle_eager, sender=worker, weak=False)
         self.tracker = EagerTracker()
         self.touched: list[tuple[type, str, list[str]] | None] = []
 
@@ -231,7 +232,9 @@ class EagerListener(Listener):
         model, field, instances, key = parser(args, kwargs, context)
         frame = get_caller()
         self.tracker.track(model, field, instances, key, caller=frame)
-        signals.touch.connect(self.handle_touch, sender=signals.get_worker())
+        signals.touch.connect(
+            self.handle_touch, sender=signals.get_worker(), weak=False
+        )
 
     def handle_touch(
         self,
@@ -266,11 +269,11 @@ class DebugListener(Listener):
     def setup(self) -> None:
         """Connect to all detection signals."""
         worker = signals.get_worker()
-        signals.load.connect(self._on_load, sender=worker)
-        signals.ignore_load.connect(self._on_ignore_load, sender=worker)
-        signals.lazy_load.connect(self._on_lazy_load, sender=worker)
-        signals.eager_load.connect(self._on_eager_load, sender=worker)
-        signals.touch.connect(self._on_touch, sender=worker)
+        signals.load.connect(self._on_load, sender=worker, weak=False)
+        signals.ignore_load.connect(self._on_ignore_load, sender=worker, weak=False)
+        signals.lazy_load.connect(self._on_lazy_load, sender=worker, weak=False)
+        signals.eager_load.connect(self._on_eager_load, sender=worker, weak=False)
+        signals.touch.connect(self._on_touch, sender=worker, weak=False)
 
     def cleanup(self) -> None:
         """Disconnect all signal handlers."""

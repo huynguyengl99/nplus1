@@ -1,5 +1,6 @@
 """Tests for the core detection modules."""
 
+import gc
 import inspect
 from typing import Any
 from unittest import mock
@@ -550,6 +551,81 @@ class TestSignals:
 
         signal.send(signals.get_worker())
         assert len(called) == 1
+
+
+class TestStrongReceivers:
+    """Tests for weak=False signal connections."""
+
+    def test_listener_receivers_survive_gc(self) -> None:
+        """Listener receivers must not be collected while still connected."""
+        parent = mock.Mock()
+        listener = LazyListener(parent)
+        listener.setup()
+
+        model = type("User", (), {})
+
+        def load_parser(args: Any, kwargs: Any, context: Any, ret: Any) -> list[str]:
+            return ["User:1"]
+
+        signals.load.send(
+            signals.get_worker(),
+            args=(),
+            kwargs={},
+            context={},
+            ret=None,
+            parser=load_parser,
+        )
+
+        # Force a GC cycle — with weak=True this could collect the receiver
+        gc.collect()
+
+        def lazy_parser(args: Any, kwargs: Any, context: Any) -> tuple[type, str, str]:
+            return model, "User:1", "addresses"
+
+        signals.lazy_load.send(
+            signals.get_worker(),
+            args=(),
+            kwargs={},
+            context={},
+            parser=lazy_parser,
+        )
+
+        parent.notify.assert_called_once()
+        listener.teardown()
+
+    def test_cleanup_disconnects_strong_receivers(self) -> None:
+        """cleanup() must fully disconnect strong receivers."""
+        parent = mock.Mock()
+        listener = LazyListener(parent)
+        listener.setup()
+        listener.cleanup()
+
+        model = type("User", (), {})
+
+        def load_parser(args: Any, kwargs: Any, context: Any, ret: Any) -> list[str]:
+            return ["User:1"]
+
+        signals.load.send(
+            signals.get_worker(),
+            args=(),
+            kwargs={},
+            context={},
+            ret=None,
+            parser=load_parser,
+        )
+
+        def lazy_parser(args: Any, kwargs: Any, context: Any) -> tuple[type, str, str]:
+            return model, "User:1", "addresses"
+
+        signals.lazy_load.send(
+            signals.get_worker(),
+            args=(),
+            kwargs={},
+            context={},
+            parser=lazy_parser,
+        )
+
+        parent.notify.assert_not_called()
 
 
 class TestImperativeSession:
