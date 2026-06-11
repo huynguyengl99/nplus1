@@ -137,16 +137,15 @@ class LazyListener(Listener):
         self.loaded: set[str] = set()
         self.ignored: set[str] = set()
         worker = signals.get_worker()
-        signals.load.connect(self.handle_load, sender=worker, weak=False)
-        signals.ignore_load.connect(self.handle_ignore, sender=worker, weak=False)
-        signals.lazy_load.connect(self.handle_lazy, sender=worker, weak=False)
+        signals.connect(signals.load, self.handle_load, worker)
+        signals.connect(signals.ignore_load, self.handle_ignore, worker)
+        signals.connect(signals.lazy_load, self.handle_lazy, worker)
 
     def cleanup(self) -> None:
         """Disconnect signal handlers without reporting."""
-        worker = signals.get_worker()
-        signals.load.disconnect(self.handle_load, sender=worker)
-        signals.ignore_load.disconnect(self.handle_ignore, sender=worker)
-        signals.lazy_load.disconnect(self.handle_lazy, sender=worker)
+        signals.disconnect(signals.load, self.handle_load)
+        signals.disconnect(signals.ignore_load, self.handle_ignore)
+        signals.disconnect(signals.lazy_load, self.handle_lazy)
 
     def teardown(self) -> None:
         """Disconnect signal handlers."""
@@ -204,15 +203,14 @@ class EagerListener(Listener):
     def setup(self) -> None:
         """Connect to eager_load signal."""
         worker = signals.get_worker()
-        signals.eager_load.connect(self.handle_eager, sender=worker, weak=False)
+        signals.connect(signals.eager_load, self.handle_eager, worker)
         self.tracker = EagerTracker()
         self.touched: list[tuple[type, str, list[str]] | None] = []
 
     def cleanup(self) -> None:
         """Disconnect signal handlers without reporting."""
-        worker = signals.get_worker()
-        signals.eager_load.disconnect(self.handle_eager, sender=worker)
-        signals.touch.disconnect(self.handle_touch, sender=worker)
+        signals.disconnect(signals.eager_load, self.handle_eager)
+        signals.disconnect(signals.touch, self.handle_touch)
 
     def teardown(self) -> None:
         """Report unused eager loads and disconnect signals."""
@@ -232,9 +230,7 @@ class EagerListener(Listener):
         model, field, instances, key = parser(args, kwargs, context)
         frame = get_caller()
         self.tracker.track(model, field, instances, key, caller=frame)
-        signals.touch.connect(
-            self.handle_touch, sender=signals.get_worker(), weak=False
-        )
+        signals.connect(signals.touch, self.handle_touch, signals.get_worker())
 
     def handle_touch(
         self,
@@ -269,20 +265,19 @@ class DebugListener(Listener):
     def setup(self) -> None:
         """Connect to all detection signals."""
         worker = signals.get_worker()
-        signals.load.connect(self._on_load, sender=worker, weak=False)
-        signals.ignore_load.connect(self._on_ignore_load, sender=worker, weak=False)
-        signals.lazy_load.connect(self._on_lazy_load, sender=worker, weak=False)
-        signals.eager_load.connect(self._on_eager_load, sender=worker, weak=False)
-        signals.touch.connect(self._on_touch, sender=worker, weak=False)
+        signals.connect(signals.load, self._on_load, worker)
+        signals.connect(signals.ignore_load, self._on_ignore_load, worker)
+        signals.connect(signals.lazy_load, self._on_lazy_load, worker)
+        signals.connect(signals.eager_load, self._on_eager_load, worker)
+        signals.connect(signals.touch, self._on_touch, worker)
 
     def cleanup(self) -> None:
         """Disconnect all signal handlers."""
-        worker = signals.get_worker()
-        signals.load.disconnect(self._on_load, sender=worker)
-        signals.ignore_load.disconnect(self._on_ignore_load, sender=worker)
-        signals.lazy_load.disconnect(self._on_lazy_load, sender=worker)
-        signals.eager_load.disconnect(self._on_eager_load, sender=worker)
-        signals.touch.disconnect(self._on_touch, sender=worker)
+        signals.disconnect(signals.load, self._on_load)
+        signals.disconnect(signals.ignore_load, self._on_ignore_load)
+        signals.disconnect(signals.lazy_load, self._on_lazy_load)
+        signals.disconnect(signals.eager_load, self._on_eager_load)
+        signals.disconnect(signals.touch, self._on_touch)
 
     def teardown(self) -> None:
         """Disconnect signal handlers."""

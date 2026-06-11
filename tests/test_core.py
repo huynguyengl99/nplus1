@@ -552,6 +552,45 @@ class TestSignals:
         signal.send(signals.get_worker())
         assert len(called) == 1
 
+    def test_ignore_preserves_receiver_strength(self) -> None:
+        """ignore() must reconnect weak=False receivers as strong."""
+        parent = mock.Mock()
+        listener = LazyListener(parent)
+        listener.setup()
+        try:
+            with signals.ignore(signals.lazy_load):
+                pass
+            # Strong receivers are stored as the bound method itself; a
+            # weakref-downgraded one would be stored as a WeakMethod instead.
+            assert listener.handle_lazy in signals.lazy_load.receivers.values(), (
+                "ignore() downgraded a strong receiver to a weakref"
+            )
+        finally:
+            listener.cleanup()
+
+    def test_ignore_preserves_weak_receivers(self) -> None:
+        """ignore() must not promote weak receivers to strong (would leak)."""
+        called: list[bool] = []
+
+        class Subscriber:
+            def handle(self, sender: Any, **kw: Any) -> None:
+                called.append(True)
+
+        sub = Subscriber()
+        signals.lazy_load.connect(sub.handle, sender=signals.get_worker())
+        try:
+            with signals.ignore(signals.lazy_load):
+                pass
+            # Still connected...
+            connected = list(signals.lazy_load.receivers_for(signals.get_worker()))
+            assert sub.handle in connected, "receiver was not reconnected"
+            # ...but stored as a weakref, not promoted to a strong reference.
+            assert sub.handle not in signals.lazy_load.receivers.values(), (
+                "ignore() promoted a weak receiver to strong"
+            )
+        finally:
+            signals.lazy_load.disconnect(sub.handle)
+
 
 class TestStrongReceivers:
     """Tests for weak=False signal connections."""
@@ -626,6 +665,21 @@ class TestStrongReceivers:
         )
 
         parent.notify.assert_not_called()
+
+    def test_cleanup_removes_strong_receivers_from_signal(self) -> None:
+        """cleanup() must not retain strong receivers in Signal.receivers."""
+        parent = mock.Mock()
+        listener = LazyListener(parent)
+        listener.setup()
+
+        assert listener.handle_load in signals.load.receivers.values()
+        assert listener.handle_lazy in signals.lazy_load.receivers.values()
+
+        listener.cleanup()
+
+        assert listener.handle_load not in signals.load.receivers.values()
+        assert listener.handle_ignore not in signals.ignore_load.receivers.values()
+        assert listener.handle_lazy not in signals.lazy_load.receivers.values()
 
 
 class TestImperativeSession:

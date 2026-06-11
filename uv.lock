@@ -1165,7 +1165,7 @@ test-sqlalchemy = [
 
 [package.metadata]
 requires-dist = [
-    { name = "blinker", specifier = ">=1.9" },
+    { name = "blinker", specifier = ">=1.9,<2" },
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.3" },
     { name = "django", marker = "extra == 'django'", specifier = ">=4.2" },
     { name = "flask", marker = "extra == 'flask'", specifier = ">=2.0" },

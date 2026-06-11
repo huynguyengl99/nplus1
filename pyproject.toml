@@ -85,7 +85,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries",
   "Topic :: Software Development"
 ]
-dependencies = ["blinker>=1.9"]
+dependencies = ["blinker>=1.9,<2"]
 description = "nplusone is a library for detecting the n+1 queries problem in Python ORMs, including SQLAlchemy, Peewee, and the Django ORM"
 license = {file = "LICENSE"}
 name = "nplus1"

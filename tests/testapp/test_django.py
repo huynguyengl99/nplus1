@@ -1028,6 +1028,70 @@ class TestExceptionCleanup:
 
         assert not middleware._listeners.get(request, {})
 
+    def test_response_teardown_leaves_no_strong_receivers(self, objects: Any) -> None:
+        """process_response must remove strong receivers from Signal.receivers."""
+        all_signals = [
+            signals.load,
+            signals.ignore_load,
+            signals.lazy_load,
+            signals.eager_load,
+            signals.touch,
+        ]
+        before = [set(sig.receivers) for sig in all_signals]
+        middleware = NPlusOneMiddleware(lambda request: None)
+        for _ in range(3):
+            request = HttpRequest()
+            request.method = "GET"
+            request.path = "/test/"
+            middleware.process_request(request)
+            middleware.process_response(request, HttpResponse())
+
+        for sig, before_keys in zip(all_signals, before, strict=True):
+            assert set(sig.receivers) <= before_keys, "receivers leaked"
+
+    def test_concurrent_request_lifecycle_is_safe(self, objects: Any) -> None:
+        """Concurrent setup/teardown must not crash or grow blinker bookkeeping."""
+        all_signals = [
+            signals.load,
+            signals.ignore_load,
+            signals.lazy_load,
+            signals.eager_load,
+            signals.touch,
+        ]
+        before_receivers = [set(sig.receivers) for sig in all_signals]
+        before_keys = [len(sig._by_sender) for sig in all_signals]
+        errors: list[BaseException] = []
+        # Keep requests alive so each one is a distinct sender id
+        keepalive: list[Any] = []
+
+        def run_requests() -> None:
+            middleware = NPlusOneMiddleware(lambda request: None)
+            try:
+                for _ in range(150):
+                    request = HttpRequest()
+                    request.method = "GET"
+                    request.path = "/stress/"
+                    keepalive.append(request)
+                    middleware.process_request(request)
+                    with signals.ignore(signals.lazy_load):
+                        pass
+                    middleware.process_response(request, HttpResponse())
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run_requests) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert not errors, f"concurrent lifecycle raised: {errors[:3]}"
+        for sig, receivers, keys in zip(
+            all_signals, before_receivers, before_keys, strict=True
+        ):
+            assert set(sig.receivers) <= receivers, "receivers leaked"
+            assert len(sig._by_sender) <= keys + 1, "sender bookkeeping leaked"
+
 
 @pytest.mark.xdist_group("settings_mutation")
 class TestExcludeURLs:

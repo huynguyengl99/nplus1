@@ -41,7 +41,9 @@ def calls() -> Any:
     worker = signals.get_worker()
     signals.lazy_load.connect(subscriber, sender=worker)
     yield collected
-    signals.lazy_load.disconnect(subscriber, sender=worker)
+    # No sender: a sender-scoped disconnect leaves the receiver entry in
+    # Signal.receivers until GC, leaking into later tests in the same worker.
+    signals.lazy_load.disconnect(subscriber)
 
 
 @pytest.fixture()
