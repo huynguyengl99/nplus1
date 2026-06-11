@@ -1,3 +1,9 @@
+## v1.1.3 (2026-06-11)
+
+### Fix
+
+- prevent per-request receiver leaks with thread-safe signal cleanup
+
 ## v1.1.2 (2026-06-08)
 
 ### Fix
